@@ -121,7 +121,7 @@ class SpaceCombatWallpaperService : WallpaperService() {
                 stars.add(CombatStar(rnd.nextFloat() * worldW * 2f, rnd.nextFloat() * worldH * 2f, rnd.nextFloat() * 2f + 0.5f, rnd.nextFloat()))
             }
             bgPaint.shader = LinearGradient(0f, 0f, 0f, h.toFloat(), intArrayOf(Color.rgb(2, 4, 8), Color.rgb(8, 12, 24)), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
-            nebulaPaint.shader = RadialGradient(w * 0.3f, h * 0.4f, maxOf(w, h), intArrayOf(Color.argb(30, 60, 40, 120), Color.argb(0, 0, 0, 0)), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
+            nebulaPaint.shader = RadialGradient(w * 0.3f, h * 0.4f, maxOf(w, h).toFloat(), intArrayOf(Color.argb(30, 60, 40, 120), Color.argb(0, 0, 0, 0)), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
         }
 
         private fun generateSystem() {
