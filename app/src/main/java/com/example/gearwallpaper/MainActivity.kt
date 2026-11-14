@@ -34,7 +34,8 @@ class MainActivity : Activity() {
         }
         val info = TextView(this).apply {
             text = "Живые обои: шестерёнки, маятник и стрелки.\n" +
-                "Если их нет в системном списке обоев — включи кнопкой ниже."
+                "Нажми «Включить обои» — откроется системный экран,\n" +
+                "там подтверди «Установить обои»."
             textSize = 14f
             setTextColor(Color.rgb(154, 163, 173))
             gravity = Gravity.CENTER
@@ -42,11 +43,11 @@ class MainActivity : Activity() {
         }
         val applyBtn = Button(this).apply {
             text = "Включить обои"
-            setOnClickListener { applyWallpaper() }
+            setOnClickListener { openOurPreview() }
         }
-        val previewBtn = Button(this).apply {
-            text = "Системный предпросмотр"
-            setOnClickListener { openPreview() }
+        val chooserBtn = Button(this).apply {
+            text = "Список живых обоев (запасной)"
+            setOnClickListener { openChooser() }
         }
 
         val wrap = LinearLayout.LayoutParams(
@@ -56,25 +57,12 @@ class MainActivity : Activity() {
         root.addView(title, wrap)
         root.addView(info, wrap)
         root.addView(applyBtn, wrap)
-        root.addView(previewBtn, LinearLayout.LayoutParams(wrap).apply { topMargin = dp(8) })
+        root.addView(chooserBtn, LinearLayout.LayoutParams(wrap).apply { topMargin = dp(8) })
         setContentView(root)
     }
 
-    /** Ставит обои напрямую, без списка обоев прошивки. */
-    private fun applyWallpaper() {
-        try {
-            WallpaperManager.getInstance(this)
-                .setWallpaperComponent(ComponentName(this, GearWallpaperService::class.java))
-            Toast.makeText(this, "Обои установлены ✔", Toast.LENGTH_LONG).show()
-            finish()
-        } catch (e: Exception) {
-            Toast.makeText(this, "Напрямую не вышло: ${e.message}", Toast.LENGTH_LONG).show()
-            openPreview()
-        }
-    }
-
-    /** Запасной путь: системный экран предпросмотра живых обоев. */
-    private fun openPreview() {
+    /** Системный предпросмотр сразу наших обоев. */
+    private fun openOurPreview() {
         try {
             startActivity(
                 Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER).putExtra(
@@ -83,7 +71,21 @@ class MainActivity : Activity() {
                 )
             )
         } catch (e: ActivityNotFoundException) {
-            Toast.makeText(this, "Предпросмотр недоступен на этой прошивке", Toast.LENGTH_LONG).show()
+            openChooser()
+        }
+    }
+
+    /** Запасной путь: AOSP-список всех живых обоев — он, в отличие от
+     *  списка прошивки, показывает сторонние сервисы. */
+    private fun openChooser() {
+        try {
+            startActivity(Intent(WallpaperManager.ACTION_LIVE_WALLPAPER_CHOOSER))
+        } catch (e: ActivityNotFoundException) {
+            Toast.makeText(
+                this,
+                "Системный выборщик обоев недоступен на этой прошивке",
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 }
