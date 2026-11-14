@@ -38,7 +38,7 @@ class SpaceCombatWallpaperService : WallpaperService() {
         private var choreographer: Choreographer? = null
         private var frameScheduled = false
         private var lastFrameNanos = 0L
-
+        
         private var density = 1f; private var worldW = 0f; private var worldH = 0f
         private var cameraX = 0f; private var cameraY = 0f
         private var warpProgress = 0f; private var warpActive = false; private var systemIndex = 0
@@ -49,7 +49,7 @@ class SpaceCombatWallpaperService : WallpaperService() {
         private val stars = mutableListOf<CombatStar>()
         private val rng = Random(42L)
         private var lastPlanetX = 0f
-
+        private var lastT = 0.0
         private val bgPaint = Paint()
         private val nebulaPaint = Paint()
         private val shipPaint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -100,6 +100,7 @@ class SpaceCombatWallpaperService : WallpaperService() {
             if (!visible || !surfaceValid) return
             if (surfaceW > 0 && surfaceH > 0 && fn - lastFrameNanos >= minFrameNanos) {
                 lastFrameNanos = fn
+             
                 if (layoutDirty) rebuildScene()
                 drawFrame((System.nanoTime() - startTime) / 1e9)
             }
@@ -145,7 +146,8 @@ class SpaceCombatWallpaperService : WallpaperService() {
             val canvas = try { holder.lockHardwareCanvas() } catch (e: Exception) { try { holder.lockCanvas() } catch (e2: Exception) { null } } ?: return
             try {
                 val w = surfaceW.toFloat(); val h = surfaceH.toFloat()
-                val dt = if (lastFrameNanos == 0L) 0.016f else ((t * 1e9 - lastFrameNanos) / 1e9f).toFloat()
+                val dt = if (lastT == 0.0) 0.016f else (t - lastT).toFloat().coerceIn(0f, 0.05f)
+                lastT = t 
 
                 if (warpActive) {
                     warpProgress += dt * 0.5f
