@@ -49,6 +49,11 @@ class MainActivity : Activity() {
 
         col.addView(space(dp(24)))
         col.addView(header("НАСТРОЙКА ПЛАНЕТАРНЫХ ЧАСОВ"))
+        
+        // НОВЫЕ ПОЛЗУНКИ
+        slider(col, "Общий масштаб системы", OrreryPrefs.SYSTEM_SCALE, 0.5f, 2.5f)
+        slider(col, "Размер планет", OrreryPrefs.PLANET_SIZE, 0.5f, 3.0f)
+        
         switch(col, "Растянуть на все экраны", OrreryPrefs.MULTI_SCREEN, true)
         slider(col, "Скорость, суток/с", OrreryPrefs.SPEED, 0.1f, 5f)
         slider(col, "Наклон орбит", OrreryPrefs.TILT, 0f, 1f)
@@ -99,7 +104,10 @@ class MainActivity : Activity() {
             OrreryPrefs.SPEED -> def.speed; OrreryPrefs.TILT -> def.tilt
             OrreryPrefs.GLOW -> def.glow; OrreryPrefs.TRAIL -> def.trail
             OrreryPrefs.STARS -> def.stars; OrreryPrefs.SPREAD -> def.spread
-            OrreryPrefs.RATE -> def.rate; else -> 1f
+            OrreryPrefs.RATE -> def.rate
+            OrreryPrefs.SYSTEM_SCALE -> def.systemScale
+            OrreryPrefs.PLANET_SIZE -> def.planetSize
+            else -> 1f
         })
         val tv = TextView(this).apply {
             textSize = 13f; setTextColor(Color.rgb(190, 210, 230))
