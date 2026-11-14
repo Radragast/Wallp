@@ -17,6 +17,7 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
+// === МОДЕЛИ ДАННЫХ (ТОЛЬКО ЗДЕСЬ, ВНУТРИ КЛАССА ИХ БЫТЬ НЕ ДОЛЖНО) ===
 private data class Star(val x: Float, val y: Float, val r: Float, val ph: Float, val fr: Float, val a: Int)
 private data class Planet(val name: String, val color: Int, val sizeDp: Float, val periodDays: Double, val l0: Double, val orbitFrac: Float, val ring: Boolean = false, val moon: Boolean = false)
 private enum class EventType(val dur: Double, val cat: Boolean, val title: String) {
@@ -86,7 +87,6 @@ class OrreryWallpaperService : WallpaperService() {
         private val calendar = Calendar.getInstance()
         private val rng = Random(7L)
 
-        // УВЕЛИЧЕНЫ РАЗМЕРЫ И ИЗМЕНЕНЫ ДИСТАНЦИИ ПО УМОЛЧАНИЮ
         private val planets = listOf(
             Planet("Меркурий", Color.rgb(170, 178, 188), 5.0f, 87.969, 252.25, 0.15f),
             Planet("Венера", Color.rgb(235, 214, 168), 7.5f, 224.701, 181.98, 0.30f),
@@ -174,8 +174,6 @@ class OrreryWallpaperService : WallpaperService() {
             worldW = w.toFloat() * effectivePages
             cx = worldW / 2f
             cy = h * 0.46f
-            
-            // НОВАЯ ФОРМУЛА МАСШТАБА: занимает больше места по ширине
             rOut = min(worldW * 0.85f, h * 0.75f) * s.systemScale
             yScale = 1f - 0.65f * s.tilt
             
@@ -296,7 +294,7 @@ class OrreryWallpaperService : WallpaperService() {
             val p = planets[i]; val (x, y, depth) = pos
             val s = settings
             val scale = 0.85f + 0.3f * ((depth + 1f) / 2f)
-            val size = dp(p.sizeDp * s.planetSize) * scale // ПРИМЕНЯЕМ МНОЖИТЕЛЬ РАЗМЕРА
+            val size = dp(p.sizeDp * s.planetSize) * scale
             
             canvas.save(); canvas.translate(x, y); canvas.drawCircle(0f, 0f, size * 3.2f, glowPaints[i])
             if (p.ring) { canvas.save(); canvas.rotate(-18f); canvas.drawOval(-size * 2.2f, -size * 0.9f, size * 2.2f, size * 0.9f, ringPaint); canvas.restore() }
@@ -310,7 +308,7 @@ class OrreryWallpaperService : WallpaperService() {
             canvas.restore()
         }
 
-          private fun drawEventWorld(canvas: Canvas, ev: CosmicEvent, p: Float, t: Double, pos: List<Triple<Float, Float, Float>>) {
+      private fun drawEventWorld(canvas: Canvas, ev: CosmicEvent, p: Float, t: Double, pos: List<Triple<Float, Float, Float>>) {
             val rnd = Random(ev.seed); val fade = min(1f, min(p / 0.12f, (1f - p) / 0.18f))
             when (ev.type) {
                 EventType.SUPERNOVA -> {
