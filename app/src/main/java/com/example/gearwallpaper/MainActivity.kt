@@ -21,7 +21,6 @@ import java.util.Locale
 import kotlin.math.roundToInt
 
 class MainActivity : Activity() {
-
     private lateinit var prefs: SharedPreferences
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -50,6 +49,7 @@ class MainActivity : Activity() {
 
         col.addView(space(dp(24)))
         col.addView(header("НАСТРОЙКА ПЛАНЕТАРНЫХ ЧАСОВ"))
+        switch(col, "Растянуть на все экраны", OrreryPrefs.MULTI_SCREEN, true)
         slider(col, "Скорость, суток/с", OrreryPrefs.SPEED, 0.1f, 5f)
         slider(col, "Наклон орбит", OrreryPrefs.TILT, 0f, 1f)
         slider(col, "Свечение", OrreryPrefs.GLOW, 0f, 1f)
