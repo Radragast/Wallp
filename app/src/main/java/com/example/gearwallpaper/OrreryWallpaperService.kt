@@ -86,13 +86,14 @@ class OrreryWallpaperService : WallpaperService() {
         private val calendar = Calendar.getInstance()
         private val rng = Random(7L)
 
+        // УВЕЛИЧЕНЫ РАЗМЕРЫ И ИЗМЕНЕНЫ ДИСТАНЦИИ ПО УМОЛЧАНИЮ
         private val planets = listOf(
-            Planet("Меркурий", Color.rgb(170, 178, 188), 3.2f, 87.969, 252.25, 0.20f),
-            Planet("Венера", Color.rgb(235, 214, 168), 5.0f, 224.701, 181.98, 0.32f),
-            Planet("Земля", Color.rgb(92, 158, 225), 5.4f, 365.256, 100.46, 0.45f, moon = true),
-            Planet("Марс", Color.rgb(214, 116, 78), 4.2f, 686.980, 355.45, 0.58f),
-            Planet("Юпитер", Color.rgb(222, 186, 138), 11f, 4332.59, 34.40, 0.76f),
-            Planet("Сатурн", Color.rgb(228, 208, 158), 9f, 10759.22, 49.94, 1.0f, ring = true),
+            Planet("Меркурий", Color.rgb(170, 178, 188), 5.0f, 87.969, 252.25, 0.15f),
+            Planet("Венера", Color.rgb(235, 214, 168), 7.5f, 224.701, 181.98, 0.30f),
+            Planet("Земля", Color.rgb(92, 158, 225), 8.0f, 365.256, 100.46, 0.48f, moon = true),
+            Planet("Марс", Color.rgb(214, 116, 78), 6.5f, 686.980, 355.45, 0.65f),
+            Planet("Юпитер", Color.rgb(222, 186, 138), 16f, 4332.59, 34.40, 0.82f),
+            Planet("Сатурн", Color.rgb(228, 208, 158), 14f, 10759.22, 49.94, 1.0f, ring = true),
         )
 
         private var activeEvent: CosmicEvent? = null
@@ -173,7 +174,9 @@ class OrreryWallpaperService : WallpaperService() {
             worldW = w.toFloat() * effectivePages
             cx = worldW / 2f
             cy = h * 0.46f
-            rOut = min(worldW * 0.46f, h * 0.55f)
+            
+            // НОВАЯ ФОРМУЛА МАСШТАБА: занимает больше места по ширине
+            rOut = min(worldW * 0.85f, h * 0.75f) * s.systemScale
             yScale = 1f - 0.65f * s.tilt
             
             val rnd = Random(42L)
@@ -182,11 +185,11 @@ class OrreryWallpaperService : WallpaperService() {
             }
             orbitRects = planets.map { p -> RectF(cx - rOut * p.orbitFrac.pow(s.spread), cy - rOut * p.orbitFrac.pow(s.spread) * yScale, cx + rOut * p.orbitFrac.pow(s.spread), cy + rOut * p.orbitFrac.pow(s.spread) * yScale) }
             glowPaints = planets.map { p ->
-                val r = dp(p.sizeDp) * 3.2f
+                val r = dp(p.sizeDp * s.planetSize) * 3.2f
                 val alpha = (110 * s.glow).toInt().coerceIn(0, 255)
                 Paint(Paint.ANTI_ALIAS_FLAG).apply { shader = RadialGradient(0f, 0f, r, intArrayOf(Color.argb(alpha, Color.red(p.color), Color.green(p.color), Color.blue(p.color)), Color.argb(0, Color.red(p.color), Color.green(p.color), Color.blue(p.color))), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP) }
             }
-            val sunR = dp(14f)
+            val sunR = dp(14f * s.systemScale)
             sunPaint.shader = RadialGradient(0f, 0f, sunR * 5f * (0.5f + s.glow), intArrayOf(Color.argb((160 * (0.5f + s.glow)).toInt(), 140, 210, 255), Color.argb((60 * (0.5f + s.glow)).toInt(), 70, 140, 230), Color.argb(0, 40, 90, 200)), floatArrayOf(0f, 0.35f, 1f), Shader.TileMode.CLAMP)
             orbitPaint.strokeWidth = dp(0.9f); tickPaint.strokeWidth = dp(1f); trailPaint.strokeWidth = dp(1.6f); ringPaint.strokeWidth = dp(1.4f)
             textPaint.textSize = dp(12f); textPaint.letterSpacing = 0.12f; labelPaint.textSize = dp(9f); labelPaint.letterSpacing = 0.08f
@@ -238,7 +241,7 @@ class OrreryWallpaperService : WallpaperService() {
                 for (i in planets.indices) if (pos[i].third < 0) drawPlanet(canvas, i, pos[i], 0.72f)
                 drawSun(canvas, t)
                 for (i in planets.indices) if (pos[i].third >= 0) drawPlanet(canvas, i, pos[i], 1f)
-                if (s.labels) for (i in planets.indices) canvas.drawText(planets[i].name, pos[i].first + dp(planets[i].sizeDp) + dp(5f), pos[i].second - dp(4f), labelPaint)
+                if (s.labels) for (i in planets.indices) canvas.drawText(planets[i].name, pos[i].first + dp(planets[i].sizeDp * s.planetSize) + dp(5f), pos[i].second - dp(4f), labelPaint)
                 activeEvent?.let { drawEventWorld(canvas, it, progress(it, t), t, pos) }
                 canvas.restore()
                 activeEvent?.let { drawEventScreen(canvas, it, progress(it, t), w, h) }
@@ -290,20 +293,24 @@ class OrreryWallpaperService : WallpaperService() {
             canvas.drawCircle(0f, 0f, dp(14f) * 5f, sunPaint); canvas.drawCircle(0f, 0f, dp(14f), sunCore); canvas.restore()
         }
         private fun drawPlanet(canvas: Canvas, i: Int, pos: Triple<Float, Float, Float>, alphaMul: Float) {
-            val p = planets[i]; val (x, y, depth) = pos; val scale = 0.85f + 0.3f * ((depth + 1f) / 2f); val size = dp(p.sizeDp) * scale
+            val p = planets[i]; val (x, y, depth) = pos
+            val s = settings
+            val scale = 0.85f + 0.3f * ((depth + 1f) / 2f)
+            val size = dp(p.sizeDp * s.planetSize) * scale // ПРИМЕНЯЕМ МНОЖИТЕЛЬ РАЗМЕРА
+            
             canvas.save(); canvas.translate(x, y); canvas.drawCircle(0f, 0f, size * 3.2f, glowPaints[i])
             if (p.ring) { canvas.save(); canvas.rotate(-18f); canvas.drawOval(-size * 2.2f, -size * 0.9f, size * 2.2f, size * 0.9f, ringPaint); canvas.restore() }
             bodyPaint.color = argbA((255 * alphaMul).toInt(), p.color); canvas.drawCircle(0f, 0f, size, bodyPaint)
             if (p.moon) {
-                val mr = dp(11f); canvas.drawOval(RectF(-mr, -mr * yScale, mr, mr * yScale), orbitPaint)
+                val mr = dp(11f * s.planetSize); canvas.drawOval(RectF(-mr, -mr * yScale, mr, mr * yScale), orbitPaint)
                 val ma = Math.toRadians((360.0 * simDays / 27.32) % 360.0)
                 bodyPaint.color = Color.argb((210 * alphaMul).toInt(), 200, 205, 215)
-                canvas.drawCircle((mr * cos(ma)).toFloat(), (mr * yScale * sin(ma)).toFloat(), dp(1.6f), bodyPaint)
+                canvas.drawCircle((mr * cos(ma)).toFloat(), (mr * yScale * sin(ma)).toFloat(), dp(1.6f * s.planetSize), bodyPaint)
             }
             canvas.restore()
         }
 
-        private fun drawEventWorld(canvas: Canvas, ev: CosmicEvent, p: Float, t: Double, pos: List<Triple<Float, Float, Float>>) {
+          private fun drawEventWorld(canvas: Canvas, ev: CosmicEvent, p: Float, t: Double, pos: List<Triple<Float, Float, Float>>) {
             val rnd = Random(ev.seed); val fade = min(1f, min(p / 0.12f, (1f - p) / 0.18f))
             when (ev.type) {
                 EventType.SUPERNOVA -> {
@@ -330,7 +337,7 @@ class OrreryWallpaperService : WallpaperService() {
                             canvas.drawCircle(tp.first + cos(a) * d, tp.second + sin(a) * d * yScale, dp(1.4f), eventPaint)
                         }
                         eventPaint.color = Color.argb((140 * (1f - ip)).toInt(), 40, 10, 5)
-                        canvas.drawCircle(tp.first, tp.second, dp(planets[ev.target].sizeDp) * 1.15f, eventPaint)
+                        canvas.drawCircle(tp.first, tp.second, dp(planets[ev.target].sizeDp * settings.planetSize) * 1.15f, eventPaint)
                     }
                 }
                 EventType.COMET -> {
@@ -385,7 +392,7 @@ class OrreryWallpaperService : WallpaperService() {
                     for (q in pos) { eventPaint.color = argbA((180 * fade).toInt(), Color.rgb(255, 230, 160)); canvas.drawCircle(q.first, q.second, dp(4f), eventPaint) }
                 }
                 EventType.RING_SHIMMER -> {
-                    val q = pos[5]; val size = dp(planets[5].sizeDp)
+                    val q = pos[5]; val size = dp(planets[5].sizeDp * settings.planetSize)
                     for (k in 0 until 3) {
                         val rr = size * (2.2f + k * 0.5f) + smooth(p) * dp(10f)
                         eventStroke.color = Color.argb((140 * fade * (1f - k * 0.25f)).toInt(), 200, 230, 255); eventStroke.strokeWidth = dp(1.2f)
@@ -394,7 +401,7 @@ class OrreryWallpaperService : WallpaperService() {
                     }
                 }
                 EventType.EARTH_AURORA -> {
-                    val q = pos[2]; val size = dp(planets[2].sizeDp)
+                    val q = pos[2]; val size = dp(planets[2].sizeDp * settings.planetSize)
                     for (k in 0 until 3) {
                         val rr = size * (1.6f + k * 0.5f) + sin(t * 2 + k).toFloat() * dp(2f)
                         eventStroke.color = Color.argb((150 * fade * (1f - k * 0.3f)).toInt(), 80, 255, 170); eventStroke.strokeWidth = dp(1.6f)
