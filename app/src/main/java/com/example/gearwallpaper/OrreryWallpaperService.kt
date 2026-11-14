@@ -444,7 +444,7 @@ class OrreryWallpaperService : WallpaperService() {
             }
             labelPaint.color = Color.argb((170 * fade).toInt(), 190, 220, 245)
             canvas.drawText("✦ " + ev.type.title, dp(16f), h - dp(44f), labelPaint)
-            if (ev.cat && p > 0.7f) {
+            if (ev.type.cat && p > 0.7f) {
                 val rp = smooth(((p - 0.7f) / 0.3f).coerceIn(0f, 1f))
                 eventPaint.color = Color.argb((235 * rp).toInt(), 1, 2, 5); canvas.drawRect(0f, 0f, w, h, eventPaint)
                 val ta = (255 * min(1f, rp * 2f)).toInt()
