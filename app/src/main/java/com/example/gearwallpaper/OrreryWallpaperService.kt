@@ -17,28 +17,19 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
-// === МОДЕЛИ ДАННЫХ (вынесены наверх для надёжности) ===
 private data class Star(val x: Float, val y: Float, val r: Float, val ph: Float, val fr: Float, val a: Int)
 private data class Planet(val name: String, val color: Int, val sizeDp: Float, val periodDays: Double, val l0: Double, val orbitFrac: Float, val ring: Boolean = false, val moon: Boolean = false)
 private enum class EventType(val dur: Double, val cat: Boolean, val title: String) {
-    SUPERNOVA(14.0, true, "Сверхновая"),
-    ASTEROID_IMPACT(9.0, false, "Столкновение астероида"),
-    COMET(12.0, false, "Пролёт кометы"),
-    SOLAR_FLARE(8.0, false, "Солнечная вспышка"),
-    METEOR_SHOWER(10.0, false, "Метеорный поток"),
-    ROGUE_BLACKHOLE(16.0, true, "Блуждающая чёрная дыра"),
-    GAMMA_BURST(7.0, true, "Гамма-всплеск"),
-    SYZYGY(10.0, false, "Парад планет"),
-    RING_SHIMMER(9.0, false, "Сияние колец Сатурна"),
-    EARTH_AURORA(9.0, false, "Полярное сияние Земли"),
-    WORMHOLE(12.0, false, "Червоточина"),
-    NEBULA_BLOOM(14.0, false, "Цветение туманности"),
-    BINARY_COMPANION(12.0, false, "Звезда-компаньон"),
-    VACUUM_DECAY(15.0, true, "Распад вакуума"),
+    SUPERNOVA(14.0, true, "Сверхновая"), ASTEROID_IMPACT(9.0, false, "Столкновение астероида"),
+    COMET(12.0, false, "Пролёт кометы"), SOLAR_FLARE(8.0, false, "Солнечная вспышка"),
+    METEOR_SHOWER(10.0, false, "Метеорный поток"), ROGUE_BLACKHOLE(16.0, true, "Блуждающая чёрная дыра"),
+    GAMMA_BURST(7.0, true, "Гамма-всплеск"), SYZYGY(10.0, false, "Парад планет"),
+    RING_SHIMMER(9.0, false, "Сияние колец Сатурна"), EARTH_AURORA(9.0, false, "Полярное сияние Земли"),
+    WORMHOLE(12.0, false, "Червоточина"), NEBULA_BLOOM(14.0, false, "Цветение туманности"),
+    BINARY_COMPANION(12.0, false, "Звезда-компаньон"), VACUUM_DECAY(15.0, true, "Распад вакуума"),
 }
 private data class CosmicEvent(val type: EventType, val start: Double, val seed: Long, val target: Int, val x: Float, val y: Float, val angle: Float)
 
-// === СЕРВИС ===
 class OrreryWallpaperService : WallpaperService() {
     override fun onCreateEngine(): Engine = OrreryEngine()
 
@@ -67,11 +58,7 @@ class OrreryWallpaperService : WallpaperService() {
         private var lastFrameNanos = 0L
 
         private val prefs = this@OrreryWallpaperService.getSharedPreferences(OrreryPrefs.NAME, MODE_PRIVATE)
-        private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-            when (key) {
-                OrreryPrefs.FORCE_RANDOM -> pendingForce = 1
-                OrreryPrefs.FORCE_CAT -> pendingForce = 2
-            }
+        private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
             settings = OrreryPrefs.read(prefs)
             layoutDirty = true
             if (!settings.events) activeEvent = null
@@ -124,11 +111,17 @@ class OrreryWallpaperService : WallpaperService() {
         }
         override fun onSurfaceDestroyed(h: SurfaceHolder) { super.onSurfaceDestroyed(h); surfaceValid = false; stopRendering() }
         override fun onDestroy() { super.onDestroy(); prefs.unregisterOnSharedPreferenceChangeListener(prefsListener); visible = false; stopRendering() }
+        
         override fun onOffsetsChanged(xo: Float, yo: Float, xStep: Float, yStep: Float, xPix: Int, yPix: Int) {
-            xOffset = xo.coerceIn(0f, 1f)
-            val p = if (xStep > 0.0001f) (1f / xStep).roundToInt() + 1 else 1
-            val c = p.coerceIn(1, 9)
-            if (c != pages) { pages = c; layoutDirty = true }
+            if (settings.multiScreen) {
+                xOffset = xo.coerceIn(0f, 1f)
+                val p = if (xStep > 0.0001f) (1f / xStep).roundToInt() + 1 else 1
+                val c = p.coerceIn(1, 9)
+                if (c != pages) { pages = c; layoutDirty = true }
+            } else {
+                xOffset = 0.5f
+                if (pages != 1) { pages = 1; layoutDirty = true }
+            }
         }
 
         private fun startRendering() {
@@ -175,10 +168,16 @@ class OrreryWallpaperService : WallpaperService() {
             layoutDirty = false
             val s = settings
             density = resources.displayMetrics.density
-            worldW = w.toFloat() * pages; cx = worldW / 2f; cy = h * 0.46f
-            rOut = min(worldW * 0.46f, h * 0.55f); yScale = 1f - 0.65f * s.tilt
+            
+            val effectivePages = if (s.multiScreen) pages.coerceAtLeast(1) else 1
+            worldW = w.toFloat() * effectivePages
+            cx = worldW / 2f
+            cy = h * 0.46f
+            rOut = min(worldW * 0.46f, h * 0.55f)
+            yScale = 1f - 0.65f * s.tilt
+            
             val rnd = Random(42L)
-            stars = List((110 * pages * s.stars).toInt().coerceAtLeast(20)) {
+            stars = List((110 * effectivePages * s.stars).toInt().coerceAtLeast(20)) {
                 Star(rnd.nextFloat() * worldW, rnd.nextFloat() * h, dp(0.6f + rnd.nextFloat() * 1.4f), rnd.nextFloat() * 6.28f, 0.3f + rnd.nextFloat() * 0.7f, 60 + rnd.nextInt(140))
             }
             orbitRects = planets.map { p -> RectF(cx - rOut * p.orbitFrac.pow(s.spread), cy - rOut * p.orbitFrac.pow(s.spread) * yScale, cx + rOut * p.orbitFrac.pow(s.spread), cy + rOut * p.orbitFrac.pow(s.spread) * yScale) }
@@ -221,7 +220,9 @@ class OrreryWallpaperService : WallpaperService() {
                 val dt = if (lastT == 0.0) 0.0 else t - lastT
                 lastT = t; simDays += dt * s.speed; updateEvents(t, s)
                 canvas.drawRect(0f, 0f, w, h, bgPaint); canvas.drawRect(0f, 0f, w, h, nebulaA); canvas.drawRect(0f, 0f, w, h, nebulaB)
-                val cameraX = xOffset * (worldW - w)
+                
+                val cameraX = if (s.multiScreen) xOffset * (worldW - w) else 0f
+                
                 canvas.save(); canvas.translate(-cameraX * 0.35f, 0f)
                 for (st in stars) {
                     val tw = 0.6f + 0.4f * sin(t * st.fr + st.ph).toFloat()
@@ -302,7 +303,7 @@ class OrreryWallpaperService : WallpaperService() {
             canvas.restore()
         }
 
-     private fun drawEventWorld(canvas: Canvas, ev: CosmicEvent, p: Float, t: Double, pos: List<Triple<Float, Float, Float>>) {
+        private fun drawEventWorld(canvas: Canvas, ev: CosmicEvent, p: Float, t: Double, pos: List<Triple<Float, Float, Float>>) {
             val rnd = Random(ev.seed); val fade = min(1f, min(p / 0.12f, (1f - p) / 0.18f))
             when (ev.type) {
                 EventType.SUPERNOVA -> {
