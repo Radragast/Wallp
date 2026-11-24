@@ -8,22 +8,47 @@ import android.service.wallpaper.WallpaperService
 import android.view.Choreographer
 import android.view.SurfaceHolder
 import java.util.Random
-import kotlin.math.*
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sin
 
-// Все поля val по умолчанию. Это безопасно и не вызывает ошибок при копировании.
-private data class CombatStar(val x: Float, val y: Float, val size: Float, val brightness: Float)
-private data class CombatPlanet(val x: Float, val y: Float, val radius: Float, val color1: Int, val color2: Int, val hasRing: Boolean, val hasAtmosphere: Boolean, val craters: List<Pair<Float, Float>>, val destroyed: Boolean = false, val destructionType: Int = 0, val destructionTime: Float = 0f)
-private data class CombatParticle(val x: Float, val y: Float, val vx: Float, val vy: Float, val life: Float, val maxLife: Float, val color: Int, val size: Float)
-
-// Обычный класс только для корабля, так как он один и его удобно менять
-private class CombatShip {
-    var x = 0f; var y = 0f; var angle = 0f; var targetPlanet: Int = 0
+private class FlightStar {
+    var x = 0f
+    var y = 0f
+    var z = 0f
+    var b = 0f
 }
 
-class SpaceCombatWallpaperService : WallpaperService() {
-    override fun onCreateEngine(): Engine = CombatEngine()
+private class FlightParticle {
+    var x = 0f
+    var y = 0f
+    var z = 0f
+    var vx = 0f
+    var vy = 0f
+    var vz = 0f
+    var life = 0f
+    var max = 1f
+    var size = 1f
+    var color = 0
+    var chunk = false
+    var rot = 0f
+    var vr = 0f
+}
 
-    inner class CombatEngine : Engine(), Choreographer.FrameCallback {
+private data class FlightPlanet(
+    val x: Float, val y: Float, val z: Float, val r: Float,
+    val c1: Int, val c2: Int,
+    val ring: Boolean, val atmo: Boolean, val bands: Boolean,
+    val seed: Long,
+    val dead: Boolean = false, val kind: Int = 0, val age: Float = 0f
+)
+
+class SpaceCombatWallpaperService : WallpaperService() {
+    override fun onCreateEngine(): Engine = FlightEngine()
+
+    inner class FlightEngine : Engine(), Choreographer.FrameCallback {
         private val minFrameNanos = 16_000_000L
         @Volatile private var visible = false
         @Volatile private var surfaceValid = false
@@ -38,47 +63,73 @@ class SpaceCombatWallpaperService : WallpaperService() {
         private var choreographer: Choreographer? = null
         private var frameScheduled = false
         private var lastFrameNanos = 0L
-        
-        private var density = 1f; private var worldW = 0f; private var worldH = 0f
-        private var cameraX = 0f; private var cameraY = 0f
-        private var warpProgress = 0f; private var warpActive = false; private var systemIndex = 0
-
-        private val ship = CombatShip()
-        private val planets = mutableListOf<CombatPlanet>()
-        private val particles = mutableListOf<CombatParticle>()
-        private val stars = mutableListOf<CombatStar>()
-        private val rng = Random(42L)
-        private var lastPlanetX = 0f
         private var lastT = 0.0
-        private val bgPaint = Paint()
-        private val nebulaPaint = Paint()
-        private val shipPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val enginePaint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val particlePaint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(200, 200, 230, 255); textAlign = Paint.Align.CENTER
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-        }
 
-        override fun onVisibilityChanged(v: Boolean) { visible = v; if (v) startRendering() else stopRendering() }
-        override fun onSurfaceCreated(h: SurfaceHolder) { super.onSurfaceCreated(h); surfaceValid = true }
+        private var density = 1f
+        private var focal = 1000f
+        private var camX = 0f
+        private var camY = 0f
+        private var camZ = 0f
+        private var roll = 0f
+        private var shake = 0f
+        private val baseSpeed = 1500f
+        private var warpSpeed = 0f
+        private var warpT = 0f
+        private var warpActive = false
+        private var swapped = false
+        private var started = false
+        private var systemIndex = 0
+
+        private val stars = mutableListOf<FlightStar>()
+        private val planets = mutableListOf<FlightPlanet>()
+        private val parts = mutableListOf<FlightParticle>()
+        private val rng = Random(9L)
+
+        private val bgPaint = Paint()
+        private val nebA = Paint()
+        private val nebB = Paint()
+        private val vig = Paint()
+        private val dot = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val line = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val body = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val ringP = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val hud = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val bar = Paint()
+        private val clip = Path()
+        private val chunkPath = Path()
+
+        override fun onVisibilityChanged(v: Boolean) {
+            visible = v
+            if (v) startRendering() else stopRendering()
+        }
+        override fun onSurfaceCreated(h: SurfaceHolder) {
+            super.onSurfaceCreated(h); surfaceValid = true
+        }
         override fun onSurfaceChanged(h: SurfaceHolder, f: Int, w: Int, hh: Int) {
-            super.onSurfaceChanged(h, f, w, hh); surfaceW = w; surfaceH = hh; layoutDirty = true
+            super.onSurfaceChanged(h, f, w, hh)
+            surfaceW = w; surfaceH = hh; layoutDirty = true
             if (visible) startRendering()
         }
-        override fun onSurfaceDestroyed(h: SurfaceHolder) { super.onSurfaceDestroyed(h); surfaceValid = false; stopRendering() }
-        override fun onDestroy() { super.onDestroy(); visible = false; stopRendering() }
+        override fun onSurfaceDestroyed(h: SurfaceHolder) {
+            super.onSurfaceDestroyed(h); surfaceValid = false; stopRendering()
+        }
+        override fun onDestroy() {
+            super.onDestroy(); visible = false; stopRendering()
+        }
 
         private fun startRendering() {
             synchronized(threadLock) {
                 val ex = renderHandler
                 if (ex != null) ex.post { scheduleFrame() }
                 else {
-                    val th = HandlerThread("CombatRender", Process.THREAD_PRIORITY_DISPLAY)
+                    val th = HandlerThread("FlightRender", Process.THREAD_PRIORITY_DISPLAY)
                     th.start()
                     val h = Handler(th.looper)
                     renderThread = th; renderHandler = h
-                    h.post { choreographer = Choreographer.getInstance(); scheduleFrame() }
+                    h.post {
+                        choreographer = Choreographer.getInstance()
+                        scheduleFrame()
+                    }
                 }
             }
         }
@@ -87,7 +138,11 @@ class SpaceCombatWallpaperService : WallpaperService() {
                 val h = renderHandler ?: return
                 val th = renderThread
                 renderHandler = null; renderThread = null
-                h.post { choreographer?.removeFrameCallback(this); choreographer = null; frameScheduled = false; th?.quitSafely() }
+                h.post {
+                    choreographer?.removeFrameCallback(this)
+                    choreographer = null; frameScheduled = false
+                    th?.quitSafely()
+                }
             }
         }
         private fun scheduleFrame() {
@@ -100,278 +155,447 @@ class SpaceCombatWallpaperService : WallpaperService() {
             if (!visible || !surfaceValid) return
             if (surfaceW > 0 && surfaceH > 0 && fn - lastFrameNanos >= minFrameNanos) {
                 lastFrameNanos = fn
-             
-                if (layoutDirty) rebuildScene()
+                if (layoutDirty) rebuild()
                 drawFrame((System.nanoTime() - startTime) / 1e9)
             }
             scheduleFrame()
         }
-        private fun dp(v: Float) = v * density
 
-        private fun rebuildScene() {
-            val w = surfaceW; val h = surfaceH
-            if (w <= 0 || h <= 0) return
+        private fun dp(v: Float) = v * density
+        private fun smooth(p: Float) = p * p * (3f - 2f * p)
+
+        private fun rebuild() {
+            val w = surfaceW.toFloat()
+            val h = surfaceH.toFloat()
+            if (w <= 0f || h <= 0f) return
             layoutDirty = false
             density = resources.displayMetrics.density
-            worldW = w.toFloat() * 3f; worldH = h.toFloat()
-            cameraX = ship.x - w / 2f; cameraY = ship.y - h / 2f
-
-            stars.clear()
-            val rnd = Random(42L)
-            for (i in 0 until 300) {
-                stars.add(CombatStar(rnd.nextFloat() * worldW * 2f, rnd.nextFloat() * worldH * 2f, rnd.nextFloat() * 2f + 0.5f, rnd.nextFloat()))
+            focal = h * 0.95f
+            hud.typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
+            hud.color = Color.argb(190, 130, 210, 245)
+            line.strokeCap = Paint.Cap.ROUND
+            ringP.style = Paint.Style.STROKE
+            bar.color = Color.BLACK
+            bgPaint.shader = LinearGradient(
+                0f, 0f, 0f, h,
+                intArrayOf(Color.rgb(2, 3, 8), Color.rgb(7, 10, 22)),
+                floatArrayOf(0f, 1f), Shader.TileMode.CLAMP
+            )
+            nebA.shader = RadialGradient(
+                w * 0.3f, h * 0.35f, max(w, h) * 0.8f,
+                intArrayOf(Color.argb(26, 60, 90, 190), Color.argb(0, 0, 0, 0)),
+                floatArrayOf(0f, 1f), Shader.TileMode.CLAMP
+            )
+            nebB.shader = RadialGradient(
+                w * 0.75f, h * 0.7f, max(w, h) * 0.7f,
+                intArrayOf(Color.argb(20, 120, 60, 170), Color.argb(0, 0, 0, 0)),
+                floatArrayOf(0f, 1f), Shader.TileMode.CLAMP
+            )
+            vig.shader = RadialGradient(
+                w / 2f, h / 2f, max(w, h) * 0.72f,
+                intArrayOf(Color.argb(0, 0, 0, 0), Color.argb(0, 0, 0, 0), Color.argb(200, 0, 0, 0)),
+                floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP
+            )
+            if (!started) {
+                started = true
+                makeStars()
+                generateSystem()
             }
-            bgPaint.shader = LinearGradient(0f, 0f, 0f, h.toFloat(), intArrayOf(Color.rgb(2, 4, 8), Color.rgb(8, 12, 24)), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
-            nebulaPaint.shader = RadialGradient(w * 0.3f, h * 0.4f, maxOf(w, h).toFloat(), intArrayOf(Color.argb(30, 60, 40, 120), Color.argb(0, 0, 0, 0)), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
+        }
+
+        private fun makeStars() {
+            stars.clear()
+            for (i in 0 until 420) {
+                val s = FlightStar()
+                s.x = (rng.nextFloat() - 0.5f) * 10000f
+                s.y = (rng.nextFloat() - 0.5f) * 10000f
+                s.z = camZ + 80f + rng.nextFloat() * 9000f
+                s.b = 0.25f + rng.nextFloat() * 0.75f
+                stars.add(s)
+            }
         }
 
         private fun generateSystem() {
-            planets.clear(); particles.clear(); warpActive = false; warpProgress = 0f; systemIndex++
-            lastPlanetX = ship.x + worldW * 0.5f
+            planets.clear()
+            parts.clear()
+            systemIndex++
+            var z = camZ + 2600f
             val count = 4 + rng.nextInt(4)
             for (i in 0 until count) {
-                lastPlanetX += 400f + rng.nextFloat() * 300f
-                val y = worldH * 0.3f + rng.nextFloat() * worldH * 0.4f
-                val radius = 60f + rng.nextFloat() * 120f
-                val c1 = Color.rgb(rng.nextInt(200) + 55, rng.nextInt(200) + 55, rng.nextInt(200) + 55)
-                val c2 = Color.rgb(rng.nextInt(150) + 30, rng.nextInt(150) + 30, rng.nextInt(150) + 30)
-                val craters = (0 until rng.nextInt(5)).map { Pair(rng.nextFloat() * 2f - 1f, rng.nextFloat() * 2f - 1f) }
-                planets.add(CombatPlanet(lastPlanetX, y, radius, c1, c2, rng.nextBoolean(), rng.nextBoolean(), craters))
+                val r = 260f + rng.nextFloat() * 360f
+                val c1 = Color.rgb(60 + rng.nextInt(190), 60 + rng.nextInt(190), 60 + rng.nextInt(190))
+                val c2 = Color.rgb(15 + rng.nextInt(70), 15 + rng.nextInt(70), 20 + rng.nextInt(80))
+                planets.add(
+                    FlightPlanet(
+                        (rng.nextFloat() - 0.5f) * 2200f,
+                        (rng.nextFloat() - 0.5f) * 1600f,
+                        z, r, c1, c2,
+                        rng.nextFloat() < 0.3f,
+                        rng.nextFloat() < 0.5f,
+                        rng.nextFloat() < 0.4f,
+                        rng.nextLong()
+                    )
+                )
+                z += 2600f + rng.nextFloat() * 1600f
             }
-            ship.targetPlanet = 0
         }
 
         private fun drawFrame(t: Double) {
             val holder = surfaceHolder
-            val canvas = try { holder.lockHardwareCanvas() } catch (e: Exception) { try { holder.lockCanvas() } catch (e2: Exception) { null } } ?: return
+            val canvas = try { holder.lockHardwareCanvas() } catch (e: Exception) {
+                try { holder.lockCanvas() } catch (e2: Exception) { null }
+            } ?: return
             try {
-                val w = surfaceW.toFloat(); val h = surfaceH.toFloat()
                 val dt = if (lastT == 0.0) 0.016f else (t - lastT).toFloat().coerceIn(0f, 0.05f)
-                lastT = t 
-
-                if (warpActive) {
-                    warpProgress += dt * 0.5f
-                    if (warpProgress >= 1f) generateSystem()
-                    drawWarp(canvas, w, h)
-                } else {
-                    updateShip(dt); updateParticles(dt); updatePlanets(dt); checkCollisions()
-                    if (planets.all { it.destroyed }) startWarp()
-                    updateCamera(dt); drawScene(canvas, w, h)
-                }
-            } finally { try { holder.unlockCanvasAndPost(canvas) } catch (_: IllegalArgumentException) {} }
+                lastT = t
+                update(dt)
+                render(canvas, t, dt)
+            } finally {
+                try { holder.unlockCanvasAndPost(canvas) } catch (_: IllegalArgumentException) {}
+            }
         }
 
-        private fun updateShip(dt: Float) {
-            if (ship.targetPlanet < planets.size && !planets[ship.targetPlanet].destroyed) {
-                val target = planets[ship.targetPlanet]
-                val dx = target.x - ship.x; val dy = target.y - ship.y
-                val dist = sqrt(dx * dx + dy * dy)
-                if (dist > 1f) {
-                    ship.x += dx / dist * 200f * dt; ship.y += dy / dist * 200f * dt
-                    ship.angle = atan2(dy.toDouble(), dx.toDouble()).toFloat()
+        private fun update(dt: Float) {
+            if (warpActive) {
+                warpT += dt / 2.4f
+                val wv = warpT.coerceIn(0f, 1f)
+                val boost = if (wv < 0.5f) smooth(wv / 0.5f) else 1f - smooth((wv - 0.5f) / 0.5f)
+                warpSpeed = baseSpeed * 45f * boost
+                if (wv >= 0.75f && !swapped) {
+                    generateSystem()
+                    makeStars()
+                    swapped = true
+                }
+                if (wv >= 1f) {
+                    warpActive = false; warpT = 0f; swapped = false; warpSpeed = 0f
                 }
             } else {
-                var nearest = -1; var minDist = Float.MAX_VALUE
+                camZ += baseSpeed * dt
+                val target = planets.firstOrNull { !it.dead }
+                if (target != null) {
+                    val k = min(1f, dt * 1.9f)
+                    camX += (target.x - camX) * k
+                    camY += (target.y - camY) * k
+                    val want = ((target.x - camX) * -0.006f).coerceIn(-7f, 7f)
+                    roll += (want - roll) * min(1f, dt * 3f)
+                }
                 for (i in planets.indices) {
-                    if (!planets[i].destroyed) {
-                        val dx = planets[i].x - ship.x; val dy = planets[i].y - ship.y
-                        val d = sqrt(dx * dx + dy * dy)
-                        if (d < minDist) { minDist = d; nearest = i }
-                    }
-                }
-                if (nearest >= 0) ship.targetPlanet = nearest
-            }
-        }
-
-        private fun updateCamera(dt: Float) {
-            cameraX += (ship.x - surfaceW / 2f - cameraX) * 3f * dt
-            cameraY += (ship.y - surfaceH / 2f - cameraY) * 3f * dt
-        }
-
-        private fun checkCollisions() {
-            for (i in planets.indices) {
-                if (!planets[i].destroyed) {
                     val p = planets[i]
-                    val dist = sqrt((ship.x - p.x).let { it * it } + (ship.y - p.y).let { it * it })
-                    if (dist < p.radius + 20f) { destroyPlanet(i); break }
+                    if (!p.dead && camZ > p.z - p.r * 0.85f) destroy(i)
+                }
+                if (planets.none { !it.dead }) {
+                    warpActive = true; warpT = 0f; swapped = false
                 }
             }
-        }
 
-        private fun destroyPlanet(index: Int) {
-            val p = planets[index]
-            val type = rng.nextInt(6)
-            planets[index] = CombatPlanet(p.x, p.y, p.radius, p.color1, p.color2, p.hasRing, p.hasAtmosphere, p.craters, true, type, 0f)
-            when (type) {
-                0 -> createExplosion(p.x, p.y, p.radius, p.color1)
-                1 -> createBlackHole(p.x, p.y, p.radius)
-                2 -> createShatter(p.x, p.y, p.radius, p.color1)
-                3 -> createDust(p.x, p.y, p.radius, p.color2)
-                4 -> createFreeze(p.x, p.y, p.radius, p.color1)
-                5 -> createAbsorb(p.x, p.y, p.radius, p.color1)
+            val adv = warpSpeed * dt
+            for (s in stars) {
+                if (adv > 0f) s.z -= adv
+                if (s.z - camZ < 70f) {
+                    s.z += 9000f
+                    s.x = (rng.nextFloat() - 0.5f) * 10000f
+                    s.y = (rng.nextFloat() - 0.5f) * 10000f
+                }
             }
-        }
 
-        private fun createExplosion(x: Float, y: Float, radius: Float, color: Int) {
-            for (i in 0 until 80) {
-                val angle = rng.nextFloat() * 6.28f; val speed = 100f + rng.nextFloat() * 300f
-                particles.add(CombatParticle(x, y, cos(angle).toFloat() * speed, sin(angle).toFloat() * speed, 1f + rng.nextFloat(), 2f, color, rng.nextFloat() * 8f + 4f))
-            }
-        }
-        private fun createBlackHole(x: Float, y: Float, radius: Float) {
-            for (i in 0 until 60) {
-                val angle = rng.nextFloat() * 6.28f; val dist = radius * (1f + rng.nextFloat() * 2f)
-                particles.add(CombatParticle(x + cos(angle).toFloat() * dist, y + sin(angle).toFloat() * dist, -cos(angle).toFloat() * 150f, -sin(angle).toFloat() * 150f, 2f, 3f, Color.BLACK, rng.nextFloat() * 6f + 3f))
-            }
-        }
-        private fun createShatter(x: Float, y: Float, radius: Float, color: Int) {
-            for (i in 0 until 12) {
-                val angle = rng.nextFloat() * 6.28f; val speed = 50f + rng.nextFloat() * 200f
-                particles.add(CombatParticle(x, y, cos(angle).toFloat() * speed, sin(angle).toFloat() * speed, 3f, 4f, color, radius * 0.3f + rng.nextFloat() * radius * 0.4f))
-            }
-        }
-        private fun createDust(x: Float, y: Float, radius: Float, color: Int) {
-            for (i in 0 until 100) {
-                val angle = rng.nextFloat() * 6.28f; val speed = 20f + rng.nextFloat() * 100f
-                particles.add(CombatParticle(x + cos(angle).toFloat() * radius * rng.nextFloat(), y + sin(angle).toFloat() * radius * rng.nextFloat(), cos(angle).toFloat() * speed, sin(angle).toFloat() * speed, 2f + rng.nextFloat() * 2f, 4f, color, rng.nextFloat() * 3f + 1f))
-            }
-        }
-        private fun createFreeze(x: Float, y: Float, radius: Float, color: Int) {
-            for (i in 0 until 50) {
-                val angle = rng.nextFloat() * 6.28f; val dist = rng.nextFloat() * radius
-                particles.add(CombatParticle(x + cos(angle).toFloat() * dist, y + sin(angle).toFloat() * dist, 0f, 0f, 3f, 4f, Color.argb(200, 180, 220, 255), rng.nextFloat() * 10f + 5f))
-            }
-        }
-        private fun createAbsorb(x: Float, y: Float, radius: Float, color: Int) {
-            for (i in 0 until 70) {
-                val angle = rng.nextFloat() * 6.28f; val dist = radius * (1f + rng.nextFloat() * 3f)
-                particles.add(CombatParticle(x + cos(angle).toFloat() * dist, y + sin(angle).toFloat() * dist, -cos(angle).toFloat() * 200f, -sin(angle).toFloat() * 200f, 1.5f, 2f, color, rng.nextFloat() * 5f + 3f))
-            }
-        }
-
-        // 100% ЗАЩИТА ОТ "VAL CANNOT BE REASSIGNED": мы создаём новый объект вместо изменения старого
-        private fun updateParticles(dt: Float) {
-            var i = particles.size - 1
+            var i = parts.size - 1
             while (i >= 0) {
-                val p = particles[i]
-                val newLife = p.life - dt
-                if (newLife <= 0f) {
-                    particles.removeAt(i)
-                } else {
-                    particles[i] = CombatParticle(
-                        x = p.x + p.vx * dt,
-                        y = p.y + p.vy * dt,
-                        vx = p.vx,
-                        vy = p.vy,
-                        life = newLife,
-                        maxLife = p.maxLife,
-                        color = p.color,
-                        size = p.size
-                    )
+                val p = parts[i]
+                p.x += p.vx * dt
+                p.y += p.vy * dt
+                p.z += p.vz * dt
+                p.rot += p.vr * dt
+                p.life -= dt
+                if (p.life <= 0f || p.z - camZ < 50f) parts.removeAt(i)
+                i--
+            }
+
+            i = planets.size - 1
+            while (i >= 0) {
+                val p = planets[i]
+                if (p.dead) {
+                    val na = p.age + dt
+                    if (na > 3.5f) planets.removeAt(i)
+                    else planets[i] = p.copy(age = na)
                 }
                 i--
             }
+            shake = max(0f, shake - dt * 2.2f)
         }
-        
-        // То же самое для планет
-        private fun updatePlanets(dt: Float) {
-            for (i in planets.indices) {
-                val p = planets[i]
-                if (p.destroyed) {
-                    planets[i] = CombatPlanet(
-                        x = p.x, y = p.y, radius = p.radius,
-                        color1 = p.color1, color2 = p.color2,
-                        hasRing = p.hasRing, hasAtmosphere = p.hasAtmosphere,
-                        craters = p.craters,
-                        destroyed = true,
-                        destructionType = p.destructionType,
-                        destructionTime = p.destructionTime + dt
-                    )
+
+        private fun destroy(index: Int) {
+            val p = planets[index]
+            val kind = rng.nextInt(6)
+            planets[index] = p.copy(dead = true, kind = kind, age = 0f)
+            shake = 1f
+            val n = when (kind) { 2 -> 16; 3 -> 150; else -> 90 }
+            for (i in 0 until n) {
+                val a = rng.nextFloat() * 6.2832f
+                val b = (rng.nextFloat() - 0.5f) * 3.1416f
+                val dx = cos(b) * cos(a)
+                val dy = cos(b) * sin(a)
+                val dz = sin(b)
+                val q = FlightParticle()
+                q.color = if (rng.nextBoolean()) p.c1 else p.c2
+                q.chunk = kind == 2
+                q.size = if (q.chunk) p.r * (0.18f + rng.nextFloat() * 0.22f)
+                else 6f + rng.nextFloat() * 22f
+                q.max = 1.4f + rng.nextFloat() * 1.6f
+                q.life = q.max
+                q.rot = rng.nextFloat() * 360f
+                q.vr = (rng.nextFloat() - 0.5f) * 180f
+                when (kind) {
+                    1, 5 -> {
+                        val d = p.r * (1.4f + rng.nextFloat() * 2f)
+                        q.x = p.x + dx * d; q.y = p.y + dy * d; q.z = p.z + dz * d
+                        val sp = 700f + rng.nextFloat() * 900f
+                        q.vx = -dx * sp; q.vy = -dy * sp; q.vz = -dz * sp
+                        q.color = if (kind == 1) Color.rgb(20, 20, 26) else p.c1
+                    }
+                    4 -> {
+                        val d = rng.nextFloat() * p.r
+                        q.x = p.x + dx * d; q.y = p.y + dy * d; q.z = p.z + dz * d
+                        q.vx = dx * 90f; q.vy = dy * 90f; q.vz = dz * 90f
+                        q.color = Color.rgb(190, 225, 255)
+                        q.chunk = true
+                        q.size = p.r * (0.08f + rng.nextFloat() * 0.14f)
+                    }
+                    else -> {
+                        val d = rng.nextFloat() * p.r * 0.6f
+                        q.x = p.x + dx * d; q.y = p.y + dy * d; q.z = p.z + dz * d
+                        val sp = if (kind == 3) 150f + rng.nextFloat() * 450f
+                        else 500f + rng.nextFloat() * 1700f
+                        q.vx = dx * sp; q.vy = dy * sp; q.vz = dz * sp
+                    }
                 }
+                parts.add(q)
             }
         }
-        
-        private fun startWarp() { warpActive = true; warpProgress = 0f }
 
-        private fun drawScene(canvas: Canvas, w: Float, h: Float) {
-            canvas.drawRect(0f, 0f, w, h, bgPaint); canvas.drawRect(0f, 0f, w, h, nebulaPaint)
-            canvas.save(); canvas.translate(-cameraX, -cameraY)
+        private fun render(canvas: Canvas, t: Double, dt: Float) {
+            val w = surfaceW.toFloat()
+            val h = surfaceH.toFloat()
+            val cx = w / 2f
+            val cy = h / 2f
+            canvas.drawRect(0f, 0f, w, h, bgPaint)
+            canvas.drawRect(0f, 0f, w, h, nebA)
+            canvas.drawRect(0f, 0f, w, h, nebB)
 
+            canvas.save()
+            val sh = shake * dp(14f)
+            canvas.translate(sin(t * 47.0).toFloat() * sh, cos(t * 41.0).toFloat() * sh)
+            canvas.rotate(roll, cx, cy)
+
+            val trail = (if (warpActive) warpSpeed else baseSpeed) * dt * 2.4f
             for (s in stars) {
-                val sx = s.x - cameraX * 0.3f; val sy = s.y - cameraY * 0.3f
-                if (sx > cameraX - 10f && sx < cameraX + w + 10f && sy > cameraY - 10f && sy < cameraY + h + 10f) {
-                    particlePaint.color = Color.argb((s.brightness * 200).toInt(), 200, 220, 255)
-                    canvas.drawCircle(sx + cameraX, sy + cameraY, s.size, particlePaint)
+                val dz = s.z - camZ
+                if (dz < 70f) continue
+                val k = focal / dz
+                val sx = cx + (s.x - camX) * k
+                val sy = cy + (s.y - camY) * k
+                if (sx < -200f || sx > w + 200f || sy < -200f || sy > h + 200f) continue
+                val k2 = focal / (dz + trail)
+                val px = cx + (s.x - camX) * k2
+                val py = cy + (s.y - camY) * k2
+                val a = (s.b * 230f * min(1f, 2500f / dz)).toInt().coerceIn(0, 255)
+                line.color = Color.argb(a, 205, 228, 255)
+                line.strokeWidth = max(0.8f, s.b * 2.4f * min(2f, 1200f / dz))
+                canvas.drawLine(px, py, sx, sy, line)
+            }
+
+            val sorted = planets.sortedByDescending { it.z }
+            for (p in sorted) drawPlanet(canvas, p, cx, cy, w, h)
+
+            for (p in parts) {
+                val dz = p.z - camZ
+                if (dz < 60f) continue
+                val k = focal / dz
+                val sx = cx + (p.x - camX) * k
+                val sy = cy + (p.y - camY) * k
+                val sr = max(0.6f, p.size * k)
+                if (sx + sr < 0f || sx - sr > w || sy + sr < 0f || sy - sr > h) continue
+                val a = (p.life / p.max * 255f).toInt().coerceIn(0, 255)
+                dot.color = Color.argb(a, Color.red(p.color), Color.green(p.color), Color.blue(p.color))
+                if (p.chunk) {
+                    canvas.save()
+                    canvas.translate(sx, sy)
+                    canvas.rotate(p.rot)
+                    chunkPath.rewind()
+                    chunkPath.moveTo(-sr, -sr * 0.6f)
+                    chunkPath.lineTo(sr * 0.7f, -sr)
+                    chunkPath.lineTo(sr, sr * 0.5f)
+                    chunkPath.lineTo(-sr * 0.4f, sr)
+                    chunkPath.close()
+                    canvas.drawPath(chunkPath, dot)
+                    canvas.restore()
+                } else {
+                    canvas.drawCircle(sx, sy, sr, dot)
                 }
             }
-            for (p in planets) { if (!p.destroyed || p.destructionTime < 4f) drawPlanet(canvas, p) }
-            for (p in particles) {
-                val alpha = (p.life / p.maxLife * 255).toInt().coerceIn(0, 255)
-                particlePaint.color = Color.argb(alpha, Color.red(p.color), Color.green(p.color), Color.blue(p.color))
-                canvas.drawCircle(p.x, p.y, p.size, particlePaint)
-            }
-            drawShip(canvas); canvas.restore()
+            canvas.restore()
 
-            textPaint.textSize = dp(20f)
-            canvas.drawText("Система $systemIndex", w / 2f, dp(40f), textPaint)
-            canvas.drawText("Планет: ${planets.count { !it.destroyed }}", w / 2f, dp(70f), textPaint)
+            drawHud(canvas, w, h, cx, cy)
+
+            if (warpActive) {
+                val wv = warpT.coerceIn(0f, 1f)
+                val fw = ((wv - 0.5f) / 0.5f).coerceIn(0f, 1f)
+                val fl = sin(fw * PI).toFloat()
+                dot.color = Color.argb((235 * fl).toInt().coerceIn(0, 255), 225, 240, 255)
+                canvas.drawRect(0f, 0f, w, h, dot)
+            }
+            canvas.drawRect(0f, 0f, w, h, vig)
+            val bh = h * 0.045f
+            canvas.drawRect(0f, 0f, w, bh, bar)
+            canvas.drawRect(0f, h - bh, w, h, bar)
         }
 
-        private fun drawPlanet(canvas: Canvas, p: CombatPlanet) {
-            if (p.destroyed) {
-                val progress = (p.destructionTime / 2f).coerceIn(0f, 1f)
-                if (p.destructionType == 1) {
-                    val radius = p.radius * (1f - progress * 0.5f)
-                    val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-                    paint.shader = RadialGradient(p.x, p.y, radius, intArrayOf(Color.BLACK, Color.argb(0, 0, 0, 0)), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
-                    canvas.drawCircle(p.x, p.y, radius * 2f, paint)
-                } else if (p.destructionType == 4) {
-                    val alpha = (200 * (1f - progress)).toInt().coerceIn(0, 255)
-                    val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-                    paint.color = Color.argb(alpha, 180, 220, 255)
-                    canvas.drawCircle(p.x, p.y, p.radius * (1f + progress * 0.3f), paint)
+        private fun drawPlanet(canvas: Canvas, p: FlightPlanet, cx: Float, cy: Float, w: Float, h: Float) {
+            val dz = p.z - camZ
+            if (dz < 60f) return
+            val k = focal / dz
+            val sx = cx + (p.x - camX) * k
+            val sy = cy + (p.y - camY) * k
+            val sr = p.r * k
+            if (sx + sr * 2f < 0f || sx - sr * 2f > w) return
+            if (sy + sr * 2f < 0f || sy - sr * 2f > h) return
+
+            if (p.dead) {
+                val q = (p.age / 3.5f).coerceIn(0f, 1f)
+                val fade = (1f - q)
+                when (p.kind) {
+                    0 -> {
+                        val rr = sr * (0.6f + q * 2.2f)
+                        body.shader = RadialGradient(
+                            sx, sy, max(1f, rr),
+                            intArrayOf(
+                                Color.argb((200 * fade).toInt(), 255, 240, 200),
+                                Color.argb(0, 255, 120, 40)
+                            ),
+                            floatArrayOf(0f, 1f), Shader.TileMode.CLAMP
+                        )
+                        canvas.drawCircle(sx, sy, rr, body)
+                        body.shader = null
+                        ringP.strokeWidth = dp(2f) * fade + 0.5f
+                        ringP.color = Color.argb((170 * fade).toInt(), 255, 200, 140)
+                        canvas.drawCircle(sx, sy, sr * (1f + q * 3f), ringP)
+                    }
+                    1 -> {
+                        val rr = sr * (1f - q * 0.7f)
+                        body.color = Color.argb((255 * fade).toInt(), 0, 0, 0)
+                        canvas.drawCircle(sx, sy, max(1f, rr * 0.55f), body)
+                        ringP.strokeWidth = dp(3f)
+                        ringP.color = Color.argb((220 * fade).toInt(), 255, 170, 70)
+                        canvas.drawCircle(sx, sy, max(1f, rr * 0.8f), ringP)
+                    }
+                    4 -> {
+                        body.color = Color.argb((150 * fade).toInt(), 200, 235, 255)
+                        canvas.drawCircle(sx, sy, sr * (1f + q * 0.25f), body)
+                    }
+                    5 -> {
+                        body.color = Color.argb((180 * fade).toInt(), Color.red(p.c1), Color.green(p.c1), Color.blue(p.c1))
+                        canvas.drawCircle(sx, sy, max(1f, sr * (1f - q)), body)
+                    }
+                    else -> {
+                        body.color = Color.argb((90 * fade).toInt(), 255, 220, 180)
+                        canvas.drawCircle(sx, sy, sr * (0.8f + q), body)
+                    }
                 }
                 return
             }
-            if (p.hasAtmosphere) {
-                val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-                paint.shader = RadialGradient(p.x, p.y, p.radius * 1.3f, intArrayOf(Color.argb(80, Color.red(p.color1), Color.green(p.color1), Color.blue(p.color1)), Color.argb(0, 0, 0, 0)), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
-                canvas.drawCircle(p.x, p.y, p.radius * 1.3f, paint)
+
+            if (p.atmo) {
+                body.shader = RadialGradient(
+                    sx, sy, max(1f, sr * 1.25f),
+                    intArrayOf(
+                        Color.argb(70, Color.red(p.c1), Color.green(p.c1), Color.blue(p.c1)),
+                        Color.argb(0, 0, 0, 0)
+                    ),
+                    floatArrayOf(0.72f, 1f), Shader.TileMode.CLAMP
+                )
+                canvas.drawCircle(sx, sy, sr * 1.25f, body)
+                body.shader = null
             }
-            if (p.hasRing) {
-                val paint = Paint(Paint.ANTI_ALIAS_FLAG); paint.style = Paint.Style.STROKE; paint.strokeWidth = dp(8f); paint.color = Color.argb(150, 200, 200, 200)
-                canvas.save(); canvas.translate(p.x, p.y); canvas.rotate(20f)
-                canvas.drawOval(-p.radius * 1.8f, -p.radius * 0.4f, p.radius * 1.8f, p.radius * 0.4f, paint)
+
+            body.shader = RadialGradient(
+                sx - sr * 0.35f, sy - sr * 0.4f, max(1f, sr * 1.5f),
+                intArrayOf(p.c1, p.c2, Color.rgb(2, 3, 6)),
+                floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP
+            )
+            canvas.drawCircle(sx, sy, sr, body)
+            body.shader = null
+
+            if (sr > 40f) {
+                canvas.save()
+                clip.rewind()
+                clip.addCircle(sx, sy, sr, Path.Direction.CW)
+                canvas.clipPath(clip)
+                if (p.bands) {
+                    for (i in 0 until 6) {
+                        val yy = sy - sr + sr * 2f * (i + 0.5f) / 6f
+                        body.color = Color.argb(if (i % 2 == 0) 45 else 25, 0, 0, 0)
+                        canvas.drawRect(sx - sr, yy - sr * 0.09f, sx + sr, yy + sr * 0.09f, body)
+                    }
+                } else {
+                    val cr = Random(p.seed)
+                    val n = 3 + cr.nextInt(5)
+                    for (i in 0 until n) {
+                        val ax = (cr.nextFloat() - 0.5f) * 1.4f
+                        val ay = (cr.nextFloat() - 0.5f) * 1.4f
+                        body.color = Color.argb(60, 0, 0, 0)
+                        canvas.drawCircle(sx + ax * sr, sy + ay * sr, sr * (0.06f + cr.nextFloat() * 0.12f), body)
+                    }
+                }
                 canvas.restore()
             }
-            val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-            paint.shader = RadialGradient(p.x - p.radius * 0.3f, p.y - p.radius * 0.3f, p.radius, intArrayOf(p.color1, p.color2), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
-            canvas.drawCircle(p.x, p.y, p.radius, paint)
-            
-            val craterPaint = Paint(Paint.ANTI_ALIAS_FLAG); craterPaint.color = Color.argb(100, 0, 0, 0)
-            for (c in p.craters) canvas.drawCircle(p.x + c.first * p.radius * 0.6f, p.y + c.second * p.radius * 0.6f, p.radius * 0.15f, craterPaint)
-        }
 
-        private fun drawShip(canvas: Canvas) {
-            canvas.save(); canvas.translate(ship.x, ship.y); canvas.rotate(ship.angle * 57.3f)
-            enginePaint.shader = RadialGradient(-30f, 0f, 20f, intArrayOf(Color.argb(200, 255, 150, 50), Color.argb(0, 255, 100, 0)), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
-            canvas.drawCircle(-30f, 0f, 20f, enginePaint)
-            val path = Path(); path.moveTo(30f, 0f); path.lineTo(-20f, -15f); path.lineTo(-15f, 0f); path.lineTo(-20f, 15f); path.close()
-            shipPaint.color = Color.rgb(180, 200, 220); canvas.drawPath(path, shipPaint)
-            shipPaint.color = Color.rgb(100, 180, 255); canvas.drawCircle(10f, 0f, 8f, shipPaint)
-            canvas.restore()
-        }
-
-        private fun drawWarp(canvas: Canvas, w: Float, h: Float) {
-            canvas.drawRect(0f, 0f, w, h, bgPaint)
-            val progress = warpProgress.coerceIn(0f, 1f)
-            for (s in stars) {
-                val sx = (s.x - cameraX * 0.5f) % w; val sy = (s.y - cameraY * 0.5f) % h
-                particlePaint.color = Color.argb((s.brightness * 255).toInt(), 200, 220, 255)
-                canvas.drawRect(sx, sy, sx + progress * 200f, sy + 2f, particlePaint)
+            if (p.ring) {
+                canvas.save()
+                canvas.translate(sx, sy)
+                canvas.rotate(-18f)
+                ringP.strokeWidth = max(1f, sr * 0.10f)
+                ringP.color = Color.argb(120, 220, 215, 195)
+                canvas.drawOval(-sr * 1.9f, -sr * 0.42f, sr * 1.9f, sr * 0.42f, ringP)
+                ringP.strokeWidth = max(1f, sr * 0.04f)
+                ringP.color = Color.argb(80, 255, 250, 230)
+                canvas.drawOval(-sr * 2.25f, -sr * 0.5f, sr * 2.25f, sr * 0.5f, ringP)
+                canvas.restore()
             }
-            if (progress > 0.8f) canvas.drawColor(Color.argb(((progress - 0.8f) * 5f * 255).toInt().coerceIn(0, 255), 255, 255, 255))
-            textPaint.textSize = dp(30f); canvas.drawText("ВАРП-ПРЫЖОК", w / 2f, h / 2f, textPaint)
+        }
+
+        private fun drawHud(canvas: Canvas, w: Float, h: Float, cx: Float, cy: Float) {
+            hud.textSize = dp(11f)
+            hud.textAlign = Paint.Align.LEFT
+            val left = planets.count { !it.dead }
+            canvas.drawText("СИСТЕМА %02d".format(systemIndex), dp(16f), h * 0.045f + dp(22f), hud)
+            canvas.drawText("ЦЕЛЕЙ: $left", dp(16f), h * 0.045f + dp(38f), hud)
+            if (warpActive) {
+                hud.textAlign = Paint.Align.CENTER
+                hud.textSize = dp(13f)
+                canvas.drawText("СВЕРХСВЕТОВОЙ ПРЫЖОК", cx, cy, hud)
+                hud.textAlign = Paint.Align.LEFT
+                return
+            }
+            val t = planets.firstOrNull { !it.dead } ?: return
+            val dz = t.z - camZ
+            if (dz < 200f) return
+            val k = focal / dz
+            val sx = cx + (t.x - camX) * k
+            val sy = cy + (t.y - camY) * k
+            val rr = max(dp(18f), t.r * k * 1.15f)
+            if (sx < -rr || sx > w + rr || sy < -rr || sy > h + rr) return
+            line.strokeWidth = dp(1.4f)
+            line.color = Color.argb(150, 120, 220, 250)
+            val c = rr * 0.35f
+            canvas.drawLine(sx - rr, sy - rr, sx - rr + c, sy - rr, line)
+            canvas.drawLine(sx - rr, sy - rr, sx - rr, sy - rr + c, line)
+            canvas.drawLine(sx + rr, sy - rr, sx + rr - c, sy - rr, line)
+            canvas.drawLine(sx + rr, sy - rr, sx + rr, sy - rr + c, line)
+            canvas.drawLine(sx - rr, sy + rr, sx - rr + c, sy + rr, line)
+            canvas.drawLine(sx - rr, sy + rr, sx - rr, sy + rr - c, line)
+            canvas.drawLine(sx + rr, sy + rr, sx + rr - c, sy + rr, line)
+            canvas.drawLine(sx + rr, sy + rr, sx + rr, sy + rr - c, line)
+            hud.textSize = dp(10f)
+            canvas.drawText("${(dz / 1000f).toInt()}k", sx + rr + dp(6f), sy, hud)
         }
     }
 }
