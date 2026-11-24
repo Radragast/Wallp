@@ -39,7 +39,7 @@ class MainActivity : Activity() {
         col.addView(TextView(this).apply {
             text = "Коллекция живых обоев"
             textSize = 22f
-            setTextColor(Color.rgb(225, 238, 250))
+            setTextColor(Color.rgb(228, 199, 124))
             gravity = Gravity.CENTER
         })
         col.addView(space(dp(16)))
@@ -52,28 +52,27 @@ class MainActivity : Activity() {
         col.addView(button("Список живых обоев (запасной)") { openChooser() })
 
         col.addView(space(dp(24)))
+        col.addView(header("ДВИЖЕНИЕ"))
+        slider(col, "Скорость вращения спутников", OrreryPrefs.MOON_SPEED, 0.02f, 1f)
+        slider(col, "Скорость суток (планеты)", OrreryPrefs.SPEED, 0.1f, 5f)
+        slider(col, "Скорость развития цивилизаций", OrreryPrefs.CIV_SPEED, 0.2f, 3f)
+
+        col.addView(space(dp(20)))
         col.addView(header("КАМЕРА И МАСШТАБ"))
-        switch(col, "Плавающая кинематографичная камера", OrreryPrefs.CAMERA, true)
+        switch(col, "Наезд камеры с плавным возвратом", OrreryPrefs.CAMERA, true)
         switch(col, "Растянуть на все экраны", OrreryPrefs.MULTI_SCREEN, true)
         slider(col, "Масштаб системы", OrreryPrefs.SYSTEM_SCALE, 0.5f, 2.5f)
         slider(col, "Размер планет", OrreryPrefs.PLANET_SIZE, 0.6f, 3f)
         slider(col, "Наклон орбит", OrreryPrefs.TILT, 0f, 1f)
 
         col.addView(space(dp(20)))
-        col.addView(header("ЦИВИЛИЗАЦИИ"))
-        slider(col, "Скорость развития", OrreryPrefs.CIV_SPEED, 0.2f, 3f)
+        col.addView(header("ИНФОРМАЦИЯ"))
+        switch(col, "Карточки в золотой рамке у планет", OrreryPrefs.FACTS, true)
+        switch(col, "Дата и время сверху", OrreryPrefs.DATE, true)
         switch(col, "Подписи миров", OrreryPrefs.LABELS, false)
-        switch(col, "Строка даты и фактов", OrreryPrefs.DATE, true)
-        switch(col, "Чередовать с научными фактами", OrreryPrefs.FACTS, true)
-        col.addView(space(dp(6)))
-        col.addView(button("✚ Восстановить повреждённые миры") {
-            prefs.edit().putLong(OrreryPrefs.FORCE_RESTORE, System.nanoTime()).apply()
-            toast("Протокол «Генезис» запущен")
-        })
 
         col.addView(space(dp(20)))
-        col.addView(header("ВРЕМЯ И ВИД"))
-        slider(col, "Скорость суток", OrreryPrefs.SPEED, 0.1f, 5f)
+        col.addView(header("ВИД"))
         slider(col, "Свечение", OrreryPrefs.GLOW, 0f, 1f)
         slider(col, "Длина шлейфов", OrreryPrefs.TRAIL, 0f, 1f)
         slider(col, "Плотность звёзд", OrreryPrefs.STARS, 0.3f, 2f)
@@ -93,6 +92,11 @@ class MainActivity : Activity() {
         col.addView(button("☄ Катастрофа (с восстановлением мира)") {
             prefs.edit().putLong(OrreryPrefs.FORCE_CAT, System.nanoTime()).apply()
             toast("Катастрофа запущена")
+        })
+        col.addView(space(dp(8)))
+        col.addView(button("✚ Восстановить повреждённые миры") {
+            prefs.edit().putLong(OrreryPrefs.FORCE_RESTORE, System.nanoTime()).apply()
+            toast("Протокол «Генезис» запущен")
         })
 
         col.addView(space(dp(18)))
@@ -116,7 +120,7 @@ class MainActivity : Activity() {
     private fun header(t: String) = TextView(this).apply {
         text = t
         textSize = 12f
-        setTextColor(Color.rgb(120, 170, 215))
+        setTextColor(Color.rgb(201, 162, 39))
         letterSpacing = 0.15f
     }
 
@@ -130,6 +134,7 @@ class MainActivity : Activity() {
         val def = OrreryPrefs.read(prefs)
         val fallback = when (key) {
             OrreryPrefs.SPEED -> def.speed
+            OrreryPrefs.MOON_SPEED -> def.moonSpeed
             OrreryPrefs.TILT -> def.tilt
             OrreryPrefs.GLOW -> def.glow
             OrreryPrefs.TRAIL -> def.trail
