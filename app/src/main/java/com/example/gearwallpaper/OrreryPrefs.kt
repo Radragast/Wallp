@@ -6,6 +6,7 @@ import kotlin.random.Random
 object OrreryPrefs {
     const val NAME = "orrery_prefs"
     const val SPEED = "speed"
+    const val MOON_SPEED = "moon_speed"
     const val TILT = "tilt"
     const val GLOW = "glow"
     const val TRAIL = "trail"
@@ -28,8 +29,9 @@ object OrreryPrefs {
 
     data class Settings(
         val speed: Float = 1f,
+        val moonSpeed: Float = 0.1f,
         val tilt: Float = 0.55f,
-        val glow: Float = 0.7f,
+        val glow: Float = 0.6f,
         val trail: Float = 0.45f,
         val stars: Float = 1f,
         val spread: Float = 1f,
@@ -47,9 +49,9 @@ object OrreryPrefs {
     )
 
     fun read(p: SharedPreferences) = Settings(
-        p.getFloat(SPEED, 1f), p.getFloat(TILT, 0.55f), p.getFloat(GLOW, 0.7f),
-        p.getFloat(TRAIL, 0.45f), p.getFloat(STARS, 1f), p.getFloat(SPREAD, 1f),
-        p.getBoolean(LABELS, false), p.getBoolean(DATE, true),
+        p.getFloat(SPEED, 1f), p.getFloat(MOON_SPEED, 0.1f), p.getFloat(TILT, 0.55f),
+        p.getFloat(GLOW, 0.6f), p.getFloat(TRAIL, 0.45f), p.getFloat(STARS, 1f),
+        p.getFloat(SPREAD, 1f), p.getBoolean(LABELS, false), p.getBoolean(DATE, true),
         p.getBoolean(EVENTS, true), p.getFloat(RATE, 1f), p.getBoolean(CATASTROPHES, true),
         p.getBoolean(MULTI_SCREEN, true), p.getFloat(SYSTEM_SCALE, 1f),
         p.getFloat(PLANET_SIZE, 1.4f), p.getFloat(CIV_SPEED, 1f),
@@ -58,7 +60,8 @@ object OrreryPrefs {
 
     fun write(p: SharedPreferences, s: Settings) {
         p.edit()
-            .putFloat(SPEED, s.speed).putFloat(TILT, s.tilt).putFloat(GLOW, s.glow)
+            .putFloat(SPEED, s.speed).putFloat(MOON_SPEED, s.moonSpeed)
+            .putFloat(TILT, s.tilt).putFloat(GLOW, s.glow)
             .putFloat(TRAIL, s.trail).putFloat(STARS, s.stars).putFloat(SPREAD, s.spread)
             .putBoolean(LABELS, s.labels).putBoolean(DATE, s.date)
             .putBoolean(EVENTS, s.events).putFloat(RATE, s.rate)
@@ -73,8 +76,9 @@ object OrreryPrefs {
         val r = Random(System.nanoTime())
         return Settings(
             speed = 0.4f + r.nextFloat() * 2f,
+            moonSpeed = 0.05f + r.nextFloat() * 0.15f,
             tilt = 0.2f + r.nextFloat() * 0.6f,
-            glow = 0.4f + r.nextFloat() * 0.6f,
+            glow = 0.35f + r.nextFloat() * 0.5f,
             trail = r.nextFloat(),
             stars = 0.5f + r.nextFloat() * 1.5f,
             spread = 0.85f + r.nextFloat() * 0.3f,
