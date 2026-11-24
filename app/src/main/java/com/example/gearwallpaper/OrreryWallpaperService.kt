@@ -12,29 +12,19 @@ import java.util.Calendar
 import java.util.Locale
 import java.util.Random
 import kotlin.math.cos
+import kotlin.math.log10
+import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.pow
-import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlin.math.sqrt
 
-private data class OrreryStar(val x: Float, val y: Float, val r: Float, val ph: Float, val fr: Float, val a: Int)
-private data class OrreryPlanet(val name: String, val color: Int, val sizeDp: Float, val periodDays: Double, val l0: Double, val orbitFrac: Float, val ring: Boolean = false, val moon: Boolean = false)
-private enum class OrreryEventType(val dur: Double, val cat: Boolean, val title: String) {
-    SUPERNOVA(14.0, true, "Сверхновая"), ASTEROID_IMPACT(9.0, false, "Столкновение астероида"),
-    COMET(12.0, false, "Пролёт кометы"), SOLAR_FLARE(8.0, false, "Солнечная вспышка"),
-    METEOR_SHOWER(10.0, false, "Метеорный поток"), ROGUE_BLACKHOLE(16.0, true, "Блуждающая чёрная дыра"),
-    GAMMA_BURST(7.0, true, "Гамма-всплеск"), SYZYGY(10.0, false, "Парад планет"),
-    RING_SHIMMER(9.0, false, "Сияние колец Сатурна"), EARTH_AURORA(9.0, false, "Полярное сияние Земли"),
-    WORMHOLE(12.0, false, "Червоточина"), NEBULA_BLOOM(14.0, false, "Цветение туманности"),
-    BINARY_COMPANION(12.0, false, "Звезда-компаньон"), VACUUM_DECAY(15.0, true, "Распад вакуума"),
-}
-private data class OrreryCosmicEvent(val type: OrreryEventType, val start: Double, val seed: Long, val target: Int, val x: Float, val y: Float, val angle: Float)
+private data class OrreryStar(val x: Float, val y: Float, val r: Float, val ph: Float, val a: Int)
 
 class OrreryWallpaperService : WallpaperService() {
     override fun onCreateEngine(): Engine = OrreryEngine()
 
     inner class OrreryEngine : Engine(), Choreographer.FrameCallback {
-        private val minFrameIntervalNanos = 33_000_000L
+        private val minFrameNanos = 33_000_000L
         @Volatile private var visible = false
         @Volatile private var surfaceValid = false
         @Volatile private var surfaceW = 0
@@ -43,13 +33,9 @@ class OrreryWallpaperService : WallpaperService() {
         @Volatile private var xOffset = 0.5f
         @Volatile private var pages = 1
         @Volatile private var settings = OrreryPrefs.Settings()
-        @Volatile private var pendingForce = 0
 
-        private val startTimeNanos = System.nanoTime()
-        private val epochDays = (System.currentTimeMillis() - 946728000000L) / 86400000.0
-        private var simDays = epochDays
+        private val startTime = System.nanoTime()
         private var lastT = 0.0
-
         private val threadLock = Any()
         private var renderThread: HandlerThread? = null
         private var renderHandler: Handler? = null
@@ -58,94 +44,109 @@ class OrreryWallpaperService : WallpaperService() {
         private var lastFrameNanos = 0L
 
         private val prefs = this@OrreryWallpaperService.getSharedPreferences(OrreryPrefs.NAME, MODE_PRIVATE)
-        private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+        private val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            when (key) {
+                OrreryPrefs.FORCE_RANDOM -> sim.pendingRandom = true
+                OrreryPrefs.FORCE_CAT -> sim.pendingCat = true
+                OrreryPrefs.FORCE_RESTORE -> sim.pendingRestore = true
+            }
             settings = OrreryPrefs.read(prefs)
             layoutDirty = true
-            if (!settings.events) activeEvent = null
         }
 
-        private var worldW = 0f; private var cx = 0f; private var cy = 0f; private var rOut = 0f
-        private var yScale = 0.6f; private var density = 1f
-        private var stars = emptyList<OrreryStar>()
-        private var orbitRects = emptyList<RectF>()
-        private var glowPaints = emptyList<Paint>()
-        private var bgPaint = Paint(); private var nebulaA = Paint(); private var nebulaB = Paint(); private var vignettePaint = Paint()
-        
-        private val orbitPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = Color.argb(58, 120, 180, 220) }
-        private val tickPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = Color.argb(95, 150, 200, 235) }
-        private val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
-        private val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = Color.argb(150, 190, 220, 245) }
-        private val sunPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val sunCore = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(235, 248, 255) }
-        private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(185, 210, 230, 245); textAlign = Paint.Align.CENTER; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL) }
-        private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(140, 170, 205, 235); typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL) }
-        private val eventPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val eventStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
-        private val eventPath = Path()
-        private val calendar = Calendar.getInstance()
+        private val sim = OrrerySim()
         private val rng = Random(7L)
+        private var stars = emptyList<OrreryStar>()
+        private var density = 1f
+        private var baseScale = 1f
+        private var sw = 0f
+        private var sh = 0f
+        private var yScale = 0.6f
+        private var s = 1f
+        private var pageShift = 0f
+        private var camX = 0f
+        private var camY = 0f
+        private var camZoom = 1f
+        private var fromX = 0f
+        private var fromY = 0f
+        private var fromZ = 1f
+        private var toX = 0f
+        private var toY = 0f
+        private var toZ = 1f
+        private var blend = 1f
+        private var shotTimer = 6f
 
-        private val planets = listOf(
-            OrreryPlanet("Меркурий", Color.rgb(170, 178, 188), 5.0f, 87.969, 252.25, 0.15f),
-            OrreryPlanet("Венера", Color.rgb(235, 214, 168), 7.5f, 224.701, 181.98, 0.30f),
-            OrreryPlanet("Земля", Color.rgb(92, 158, 225), 8.0f, 365.256, 100.46, 0.48f, moon = true),
-            OrreryPlanet("Марс", Color.rgb(214, 116, 78), 6.5f, 686.980, 355.45, 0.65f),
-            OrreryPlanet("Юпитер", Color.rgb(222, 186, 138), 16f, 4332.59, 34.40, 0.82f),
-            OrreryPlanet("Сатурн", Color.rgb(228, 208, 158), 14f, 10759.22, 49.94, 1.0f, ring = true),
-        )
-
-        private var activeEvent: OrreryCosmicEvent? = null
-        private var nextEventAt = 0.0
+        private val bg = Paint()
+        private val nebA = Paint()
+        private val nebB = Paint()
+        private val vig = Paint()
+        private val orb = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val glow = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val disc = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val dot = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val stroke = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val txt = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val small = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val path = Path()
+        private val cal = Calendar.getInstance()
+        private val dash = DashPathEffect(floatArrayOf(7f, 9f), 0f)
 
         init {
             settings = OrreryPrefs.read(prefs)
-            prefs.registerOnSharedPreferenceChangeListener(prefsListener)
+            prefs.registerOnSharedPreferenceChangeListener(listener)
+            orb.style = Paint.Style.STROKE
+            stroke.style = Paint.Style.STROKE
+            stroke.strokeCap = Paint.Cap.ROUND
+            txt.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+            small.typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
         }
 
-        override fun onVisibilityChanged(v: Boolean) { visible = v; if (v) startRendering() else stopRendering() }
+        override fun onVisibilityChanged(v: Boolean) { visible = v; if (v) start() else stop() }
         override fun onSurfaceCreated(h: SurfaceHolder) { super.onSurfaceCreated(h); surfaceValid = true }
         override fun onSurfaceChanged(h: SurfaceHolder, f: Int, w: Int, hh: Int) {
-            super.onSurfaceChanged(h, f, w, hh); surfaceW = w; surfaceH = hh; layoutDirty = true
-            if (visible) startRendering()
+            super.onSurfaceChanged(h, f, w, hh)
+            surfaceW = w; surfaceH = hh; layoutDirty = true
+            if (visible) start()
         }
-        override fun onSurfaceDestroyed(h: SurfaceHolder) { super.onSurfaceDestroyed(h); surfaceValid = false; stopRendering() }
-        override fun onDestroy() { super.onDestroy(); prefs.unregisterOnSharedPreferenceChangeListener(prefsListener); visible = false; stopRendering() }
-        
-        override fun onOffsetsChanged(xo: Float, yo: Float, xStep: Float, yStep: Float, xPix: Int, yPix: Int) {
-            if (settings.multiScreen) {
-                xOffset = xo.coerceIn(0f, 1f)
-                val p = if (xStep > 0.0001f) (1f / xStep).roundToInt() + 1 else 1
-                val c = p.coerceIn(1, 9)
-                if (c != pages) { pages = c; layoutDirty = true }
-            } else {
-                xOffset = 0.5f
-                if (pages != 1) { pages = 1; layoutDirty = true }
-            }
+        override fun onSurfaceDestroyed(h: SurfaceHolder) { super.onSurfaceDestroyed(h); surfaceValid = false; stop() }
+        override fun onDestroy() {
+            super.onDestroy()
+            prefs.unregisterOnSharedPreferenceChangeListener(listener)
+            visible = false; stop()
+        }
+        override fun onOffsetsChanged(xo: Float, yo: Float, xs: Float, ys: Float, xp: Int, yp: Int) {
+            xOffset = xo.coerceIn(0f, 1f)
+            val p = if (xs > 0.0001f) (1f / xs).toInt() + 1 else 1
+            val c = p.coerceIn(1, 9)
+            if (c != pages) { pages = c; layoutDirty = true }
         }
 
-        private fun startRendering() {
+        private fun start() {
             synchronized(threadLock) {
                 val ex = renderHandler
-                if (ex != null) ex.post { scheduleFrame() }
+                if (ex != null) ex.post { schedule() }
                 else {
                     val th = HandlerThread("OrreryRender", Process.THREAD_PRIORITY_DISPLAY)
                     th.start()
                     val h = Handler(th.looper)
                     renderThread = th; renderHandler = h
-                    h.post { choreographer = Choreographer.getInstance(); scheduleFrame() }
+                    h.post { choreographer = Choreographer.getInstance(); schedule() }
                 }
             }
         }
-        private fun stopRendering() {
+        private fun stop() {
             synchronized(threadLock) {
                 val h = renderHandler ?: return
                 val th = renderThread
                 renderHandler = null; renderThread = null
-                h.post { choreographer?.removeFrameCallback(this); choreographer = null; frameScheduled = false; th?.quitSafely() }
+                h.post {
+                    choreographer?.removeFrameCallback(this)
+                    choreographer = null; frameScheduled = false
+                    th?.quitSafely()
+                }
             }
         }
-        private fun scheduleFrame() {
+        private fun schedule() {
             if (frameScheduled || !visible || !surfaceValid) return
             frameScheduled = true
             choreographer?.postFrameCallback(this)
@@ -153,314 +154,650 @@ class OrreryWallpaperService : WallpaperService() {
         override fun doFrame(fn: Long) {
             frameScheduled = false
             if (!visible || !surfaceValid) return
-            if (surfaceW > 0 && surfaceH > 0 && fn - lastFrameNanos >= minFrameIntervalNanos) {
+            if (surfaceW > 0 && surfaceH > 0 && fn - lastFrameNanos >= minFrameNanos) {
                 lastFrameNanos = fn
-                if (layoutDirty) rebuildScene()
-                drawFrame((System.nanoTime() - startTimeNanos) / 1e9)
+                if (layoutDirty) rebuild()
+                render((System.nanoTime() - startTime) / 1e9)
             }
-            scheduleFrame()
+            schedule()
         }
+
         private fun dp(v: Float) = v * density
-
-        private fun rebuildScene() {
-            val w = surfaceW; val h = surfaceH
-            if (w <= 0 || h <= 0) return
-            layoutDirty = false
-            val s = settings
-            density = resources.displayMetrics.density
-            
-            val effectivePages = if (s.multiScreen) pages.coerceAtLeast(1) else 1
-            worldW = w.toFloat() * effectivePages
-            cx = worldW / 2f
-            cy = h * 0.46f
-            rOut = min(worldW * 0.85f, h * 0.75f) * s.systemScale
-            yScale = 1f - 0.65f * s.tilt
-            
-            val rnd = Random(42L)
-            stars = List((110 * effectivePages * s.stars).toInt().coerceAtLeast(20)) {
-                OrreryStar(rnd.nextFloat() * worldW, rnd.nextFloat() * h, dp(0.6f + rnd.nextFloat() * 1.4f), rnd.nextFloat() * 6.28f, 0.3f + rnd.nextFloat() * 0.7f, 60 + rnd.nextInt(140))
-            }
-            orbitRects = planets.map { p -> RectF(cx - rOut * p.orbitFrac.pow(s.spread), cy - rOut * p.orbitFrac.pow(s.spread) * yScale, cx + rOut * p.orbitFrac.pow(s.spread), cy + rOut * p.orbitFrac.pow(s.spread) * yScale) }
-            glowPaints = planets.map { p ->
-                val r = dp(p.sizeDp * s.planetSize) * 3.2f
-                val alpha = (110 * s.glow).toInt().coerceIn(0, 255)
-                Paint(Paint.ANTI_ALIAS_FLAG).apply { shader = RadialGradient(0f, 0f, r, intArrayOf(Color.argb(alpha, Color.red(p.color), Color.green(p.color), Color.blue(p.color)), Color.argb(0, Color.red(p.color), Color.green(p.color), Color.blue(p.color))), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP) }
-            }
-            val sunR = dp(14f * s.systemScale)
-            sunPaint.shader = RadialGradient(0f, 0f, sunR * 5f * (0.5f + s.glow), intArrayOf(Color.argb((160 * (0.5f + s.glow)).toInt(), 140, 210, 255), Color.argb((60 * (0.5f + s.glow)).toInt(), 70, 140, 230), Color.argb(0, 40, 90, 200)), floatArrayOf(0f, 0.35f, 1f), Shader.TileMode.CLAMP)
-            orbitPaint.strokeWidth = dp(0.9f); tickPaint.strokeWidth = dp(1f); trailPaint.strokeWidth = dp(1.6f); ringPaint.strokeWidth = dp(1.4f)
-            textPaint.textSize = dp(12f); textPaint.letterSpacing = 0.12f; labelPaint.textSize = dp(9f); labelPaint.letterSpacing = 0.08f
-            bgPaint = Paint().apply { shader = LinearGradient(0f, 0f, 0f, h.toFloat(), Color.rgb(3, 5, 10), Color.rgb(9, 16, 34), Shader.TileMode.CLAMP) }
-            nebulaA = Paint().apply { shader = RadialGradient(w * 0.25f, h * 0.3f, maxOf(w, h) * 0.7f, Color.argb(22, 40, 110, 200), Color.argb(0, 20, 60, 140), Shader.TileMode.CLAMP) }
-            nebulaB = Paint().apply { shader = RadialGradient(w * 0.8f, h * 0.75f, maxOf(w, h) * 0.6f, Color.argb(16, 90, 60, 180), Color.argb(0, 50, 30, 120), Shader.TileMode.CLAMP) }
-            vignettePaint = Paint().apply { shader = RadialGradient(w / 2f, h / 2f, maxOf(w, h) * 0.75f, intArrayOf(Color.argb(0, 0, 0, 0), Color.argb(0, 0, 0, 0), Color.argb(190, 0, 0, 0)), floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP) }
-        }
-
-        private fun scheduleNext(t: Double, s: OrreryPrefs.Settings) { nextEventAt = t + (90.0 + rng.nextDouble() * 150.0) / s.rate.coerceAtLeast(0.1f) }
-        private fun startEvent(t: Double, forceCat: Boolean) {
-            val s = settings
-            val pool = OrreryEventType.values().filter { if (forceCat) it.cat else (!it.cat || s.catastrophes) }
-            activeEvent = OrreryCosmicEvent(pool[rng.nextInt(pool.size)], t, rng.nextLong(), rng.nextInt(planets.size), rng.nextFloat() * worldW, rng.nextFloat() * surfaceH * 0.7f, rng.nextFloat() * 6.283f)
-            scheduleNext(t, s)
-        }
-        private fun updateEvents(t: Double, s: OrreryPrefs.Settings) {
-            if (!s.events) { activeEvent = null; return }
-            if (nextEventAt == 0.0) scheduleNext(t, s)
-            if (pendingForce != 0) { startEvent(t, pendingForce == 2); pendingForce = 0 }
-            else if (activeEvent == null && t >= nextEventAt) startEvent(t, false)
-            val ev = activeEvent
-            if (ev != null && t - ev.start >= ev.type.dur) activeEvent = null
-        }
-
-        private fun drawFrame(t: Double) {
-            val holder = surfaceHolder
-            val canvas = try { holder.lockHardwareCanvas() } catch (e: Exception) { try { holder.lockCanvas() } catch (e2: Exception) { null } } ?: return
-            try {
-                val w = surfaceW.toFloat(); val h = surfaceH.toFloat(); val s = settings
-                val dt = if (lastT == 0.0) 0.0 else t - lastT
-                lastT = t; simDays += dt * s.speed; updateEvents(t, s)
-                canvas.drawRect(0f, 0f, w, h, bgPaint); canvas.drawRect(0f, 0f, w, h, nebulaA); canvas.drawRect(0f, 0f, w, h, nebulaB)
-                
-                val cameraX = if (s.multiScreen) xOffset * (worldW - w) else 0f
-                
-                canvas.save(); canvas.translate(-cameraX * 0.35f, 0f)
-                for (st in stars) {
-                    val tw = 0.6f + 0.4f * sin(t * st.fr + st.ph).toFloat()
-                    bodyPaint.color = Color.argb((st.a * tw).toInt().coerceIn(0, 255), 210, 230, 250)
-                    canvas.drawCircle(st.x, st.y, st.r, bodyPaint)
-                }
-                canvas.restore()
-                canvas.save(); canvas.translate(-cameraX, 0f)
-                drawChapterRing(canvas)
-                for (r in orbitRects) canvas.drawOval(r, orbitPaint)
-                drawTrails(canvas, s)
-                val pos = planets.mapIndexed { i, p -> planetPos(i, p) }
-                for (i in planets.indices) if (pos[i].third < 0) drawPlanet(canvas, i, pos[i], 0.72f)
-                drawSun(canvas, t)
-                for (i in planets.indices) if (pos[i].third >= 0) drawPlanet(canvas, i, pos[i], 1f)
-                if (s.labels) for (i in planets.indices) canvas.drawText(planets[i].name, pos[i].first + dp(planets[i].sizeDp * s.planetSize) + dp(5f), pos[i].second - dp(4f), labelPaint)
-                activeEvent?.let { drawEventWorld(canvas, it, progress(it, t), t, pos) }
-                canvas.restore()
-                activeEvent?.let { drawEventScreen(canvas, it, progress(it, t), w, h) }
-                if (s.date) {
-                    calendar.timeInMillis = System.currentTimeMillis()
-                    val line = String.format(Locale.US, "%02d.%02d.%04d  ·  %02d:%02d  ·  %.1f сут/с", calendar.get(Calendar.DAY_OF_MONTH), calendar.get(Calendar.MONTH) + 1, calendar.get(Calendar.YEAR), calendar.get(Calendar.HOUR_OF_DAY), calendar.get(Calendar.MINUTE), s.speed)
-                    canvas.drawText(line, w / 2f, h - dp(20f), textPaint)
-                }
-                canvas.drawRect(0f, 0f, w, h, vignettePaint)
-            } finally { try { holder.unlockCanvasAndPost(canvas) } catch (_: IllegalArgumentException) {} }
-        }
-
-        private fun progress(ev: OrreryCosmicEvent, t: Double) = ((t - ev.start) / ev.type.dur).toFloat().coerceIn(0f, 1f)
         private fun smooth(p: Float) = p * p * (3f - 2f * p)
-        private fun argbA(a: Int, c: Int) = Color.argb(a.coerceIn(0, 255), Color.red(c), Color.green(c), Color.blue(c))
-        private fun angleDeg(i: Int): Double = (planets[i].l0 + 360.0 * simDays / planets[i].periodDays) % 360.0
-        private fun planetPos(i: Int, p: OrreryPlanet): Triple<Float, Float, Float> {
-            val a = Math.toRadians(angleDeg(i)); val r = orbitRects[i].width() / 2f
-            return Triple(cx + (r * cos(a)).toFloat(), cy + (r * yScale * sin(a)).toFloat(), sin(a).toFloat())
+        private fun px(x: Float) = (x - camX) * s + sw / 2f + pageShift
+        private fun py(y: Float) = (y * yScale - camY) * s + sh / 2f
+
+        private fun rebuild() {
+            val w = surfaceW.toFloat()
+            val h = surfaceH.toFloat()
+            if (w <= 0f || h <= 0f) return
+            layoutDirty = false
+            sw = w; sh = h
+            density = resources.displayMetrics.density
+            baseScale = min(w, h) / 1500f
+            yScale = 1f - 0.6f * settings.tilt
+            val r = Random(42L)
+            stars = List((150 * settings.stars).toInt().coerceAtLeast(30)) {
+                OrreryStar(r.nextFloat() * w, r.nextFloat() * h,
+                    dp(0.5f + r.nextFloat() * 1.3f), r.nextFloat() * 6.28f, 50 + r.nextInt(150))
+            }
+            bg.shader = LinearGradient(0f, 0f, 0f, h,
+                intArrayOf(Color.rgb(3, 5, 11), Color.rgb(9, 15, 32)),
+                floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
+            nebA.shader = RadialGradient(w * 0.28f, h * 0.3f, max(w, h) * 0.75f,
+                intArrayOf(Color.argb(24, 46, 108, 200), Color.argb(0, 0, 0, 0)),
+                floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
+            nebB.shader = RadialGradient(w * 0.78f, h * 0.74f, max(w, h) * 0.65f,
+                intArrayOf(Color.argb(18, 110, 60, 180), Color.argb(0, 0, 0, 0)),
+                floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
+            vig.shader = RadialGradient(w / 2f, h / 2f, max(w, h) * 0.74f,
+                intArrayOf(Color.argb(0, 0, 0, 0), Color.argb(0, 0, 0, 0), Color.argb(185, 0, 0, 0)),
+                floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP)
+            orb.strokeWidth = dp(0.8f)
+            txt.textSize = dp(12f)
+            txt.letterSpacing = 0.1f
+            small.textSize = dp(10f)
         }
-        private fun drawTrails(canvas: Canvas, s: OrreryPrefs.Settings) {
-            val len = 8f + 46f * s.trail; val seg = 12
-            for (i in planets.indices) {
-                val a = angleDeg(i).toFloat(); val depth = planetPos(i, planets[i]).third; val mul = if (depth < 0) 0.45f else 1f; val c = planets[i].color
-                for (k in 0 until seg) {
-                    val f = k.toFloat() / seg
-                    trailPaint.color = Color.argb((90 * f * mul * (0.4f + 0.6f * s.glow)).toInt().coerceIn(0, 255), Color.red(c), Color.green(c), Color.blue(c))
-                    canvas.drawArc(orbitRects[i], a - len + len * f, len / seg + 0.6f, false, trailPaint)
+
+        private fun pickShot() {
+            fromX = camX; fromY = camY; fromZ = camZoom
+            blend = 0f
+            shotTimer = 24f + rng.nextFloat() * 22f
+            val ev = sim.events.firstOrNull { it.type == 0 || it.type == 1 || it.type == 3 || it.type == 15 }
+            if (ev != null && rng.nextFloat() < 0.55f) {
+                if (ev.type == 0 || ev.type == 1) { toX = ev.x; toY = ev.y * yScale; toZ = 1.6f }
+                else {
+                    val b = sim.bodies[ev.a]
+                    toX = b.x; toY = b.y * yScale; toZ = 4.5f
                 }
+                return
+            }
+            val roll = rng.nextFloat()
+            if (roll < 0.3f) { toX = 0f; toY = 0f; toZ = 0.95f; return }
+            if (roll < 0.42f) { toX = 0f; toY = 0f; toZ = 2.4f; return }
+            val live = ArrayList<Int>()
+            for (i in sim.bodies.indices) {
+                val b = sim.bodies[i]
+                if (b.pop > 1e3 || b.destroyed || b.scars > 0.3f) live.add(i)
+            }
+            val idx = if (live.isNotEmpty() && rng.nextFloat() < 0.7f) live[rng.nextInt(live.size)]
+            else rng.nextInt(sim.bodies.size)
+            val b = sim.bodies[idx]
+            toX = b.x; toY = b.y * yScale
+            toZ = if (b.parent >= 0) 6.5f else 4.2f + rng.nextFloat() * 2.2f
+        }
+
+        private fun render(t: Double) {
+            val holder = surfaceHolder
+            val canvas = try { holder.lockHardwareCanvas() } catch (e: Exception) {
+                try { holder.lockCanvas() } catch (e2: Exception) { null }
+            } ?: return
+            try {
+                val dt = if (lastT == 0.0) 0.016f else (t - lastT).toFloat().coerceIn(0f, 0.05f)
+                lastT = t
+                sim.civSpeed = settings.civSpeed
+                sim.eventRate = settings.rate
+                sim.eventsOn = settings.events
+                sim.catOn = settings.catastrophes
+                sim.update(dt, settings.speed)
+
+                if (settings.camera) {
+                    shotTimer -= dt
+                    if (shotTimer <= 0f) pickShot()
+                    blend = min(1f, blend + dt / 8f)
+                    val e = smooth(blend)
+                    camX = fromX + (toX - fromX) * e
+                    camY = fromY + (toY - fromY) * e
+                    camZoom = fromZ + (toZ - fromZ) * e
+                    camX += sin(t * 0.07).toFloat() * 6f
+                    camY += cos(t * 0.05).toFloat() * 4f
+                } else {
+                    camX = 0f; camY = 0f; camZoom = 0.95f
+                }
+                s = baseScale * camZoom * settings.systemScale
+                pageShift = if (settings.multiScreen) -(xOffset - 0.5f) * sw * (pages - 1) * 0.5f else 0f
+
+                canvas.drawRect(0f, 0f, sw, sh, bg)
+                canvas.drawRect(0f, 0f, sw, sh, nebA)
+                canvas.drawRect(0f, 0f, sw, sh, nebB)
+                drawStars(canvas, t)
+                drawOrbits(canvas)
+                drawSwarm(canvas, t)
+
+                val order = sim.bodies.indices.sortedBy { sim.bodies[it].y }
+                for (i in order) if (sim.bodies[i].y < 0f) drawBody(canvas, i, t)
+                drawSun(canvas, t)
+                for (i in order) if (sim.bodies[i].y >= 0f) drawBody(canvas, i, t)
+                for (e in sim.events) drawEvent(canvas, e, t)
+                drawHud(canvas)
+                canvas.drawRect(0f, 0f, sw, sh, vig)
+            } finally {
+                try { holder.unlockCanvasAndPost(canvas) } catch (_: IllegalArgumentException) {}
             }
         }
-        private fun drawChapterRing(canvas: Canvas) {
-            val r = rOut * 1.07f; canvas.drawOval(RectF(cx - r, cy - r * yScale, cx + r, cy + r * yScale), orbitPaint)
+
+        private fun drawStars(canvas: Canvas, t: Double) {
+            val off = -camX * 0.02f * s + pageShift * 0.3f
+            for (st in stars) {
+                var x = (st.x + off) % sw
+                if (x < 0f) x += sw
+                val tw = 0.55f + 0.45f * sin(t * 0.6 + st.ph).toFloat()
+                dot.color = Color.argb((st.a * tw).toInt().coerceIn(0, 255), 208, 228, 250)
+                canvas.drawCircle(x, st.y, st.r, dot)
+            }
+        }
+
+        private fun drawOrbits(canvas: Canvas) {
+            val cx = px(0f); val cy = py(0f)
+            orb.color = Color.argb(46, 120, 180, 225)
+            for (b in sim.bodies) {
+                if (b.parent >= 0) continue
+                val r = b.orbit * s
+                canvas.drawOval(RectF(cx - r, cy - r * yScale, cx + r, cy + r * yScale), orb)
+            }
+            if (s > 2.2f) {
+                orb.color = Color.argb(38, 140, 200, 235)
+                for (b in sim.bodies) {
+                    if (b.parent < 0) continue
+                    val p = sim.bodies[b.parent]
+                    val mx = px(p.x); val my = py(p.y)
+                    val r = b.orbit * s
+                    canvas.drawOval(RectF(mx - r, my - r * yScale, mx + r, my + r * yScale), orb)
+                }
+            }
+            val cr = 800f * s
+            orb.color = Color.argb(40, 150, 200, 235)
+            canvas.drawOval(RectF(cx - cr, cy - cr * yScale, cx + cr, cy + cr * yScale), orb)
+            stroke.strokeWidth = dp(1f)
+            stroke.color = Color.argb(70, 150, 205, 240)
             for (i in 0 until 24) {
                 val a = Math.toRadians((i * 15 - 90).toDouble())
-                val x1 = cx + (r * cos(a)).toFloat(); val y1 = cy + (r * yScale * sin(a)).toFloat()
-                val r2 = r - dp(if (i % 6 == 0) 10f else 5f)
-                canvas.drawLine(x1, y1, cx + (r2 * cos(a)).toFloat(), cy + (r2 * yScale * sin(a)).toFloat(), tickPaint)
+                val r2 = cr - dp(if (i % 6 == 0) 9f else 4f)
+                canvas.drawLine(cx + (cr * cos(a)).toFloat(), cy + (cr * yScale * sin(a)).toFloat(),
+                    cx + (r2 * cos(a)).toFloat(), cy + (r2 * yScale * sin(a)).toFloat(), stroke)
             }
-            calendar.timeInMillis = System.currentTimeMillis()
-            val hf = calendar.get(Calendar.HOUR_OF_DAY) + calendar.get(Calendar.MINUTE) / 60f
-            val a = Math.toRadians((hf / 24f * 360f - 90f).toDouble())
-            bodyPaint.color = Color.argb(220, 120, 210, 255)
-            canvas.drawCircle(cx + (r * cos(a)).toFloat(), cy + (r * yScale * sin(a)).toFloat(), dp(3f), bodyPaint)
+            cal.timeInMillis = System.currentTimeMillis()
+            val hf = cal.get(Calendar.HOUR_OF_DAY) + cal.get(Calendar.MINUTE) / 60f
+            val ha = Math.toRadians((hf / 24f * 360f - 90f).toDouble())
+            dot.color = Color.argb(220, 120, 215, 255)
+            canvas.drawCircle(cx + (cr * cos(ha)).toFloat(), cy + (cr * yScale * sin(ha)).toFloat(), dp(3f), dot)
         }
+
+        private fun drawSwarm(canvas: Canvas, t: Double) {
+            if (sim.swarm <= 0.001f) return
+            val n = (sim.swarm * 170f).toInt()
+            val cx = px(0f); val cy = py(0f)
+            for (k in 0 until n) {
+                val a = k * 2.3999 + sim.simDays * 0.03
+                val r = (70f + (k % 5) * 6f) * s
+                val x = cx + (r * cos(a)).toFloat()
+                val y = cy + (r * yScale * sin(a)).toFloat()
+                dot.color = Color.argb(190, 235, 200, 130)
+                canvas.drawCircle(x, y, max(0.8f, dp(1.1f)), dot)
+            }
+        }
+
         private fun drawSun(canvas: Canvas, t: Double) {
-            val breath = (1.0 + 0.05 * sin(t * 0.8)).toFloat()
-            canvas.save(); canvas.translate(cx, cy); canvas.scale(breath, breath)
-            canvas.drawCircle(0f, 0f, dp(14f) * 5f, sunPaint); canvas.drawCircle(0f, 0f, dp(14f), sunCore); canvas.restore()
-        }
-        private fun drawPlanet(canvas: Canvas, i: Int, pos: Triple<Float, Float, Float>, alphaMul: Float) {
-            val p = planets[i]; val (x, y, depth) = pos
-            val s = settings
-            val scale = 0.85f + 0.3f * ((depth + 1f) / 2f)
-            val size = dp(p.sizeDp * s.planetSize) * scale
-            
-            canvas.save(); canvas.translate(x, y); canvas.drawCircle(0f, 0f, size * 3.2f, glowPaints[i])
-            if (p.ring) { canvas.save(); canvas.rotate(-18f); canvas.drawOval(-size * 2.2f, -size * 0.9f, size * 2.2f, size * 0.9f, ringPaint); canvas.restore() }
-            bodyPaint.color = argbA((255 * alphaMul).toInt(), p.color); canvas.drawCircle(0f, 0f, size, bodyPaint)
-            if (p.moon) {
-                val mr = dp(11f * s.planetSize); canvas.drawOval(RectF(-mr, -mr * yScale, mr, mr * yScale), orbitPaint)
-                val ma = Math.toRadians((360.0 * simDays / 27.32) % 360.0)
-                bodyPaint.color = Color.argb((210 * alphaMul).toInt(), 200, 205, 215)
-                canvas.drawCircle((mr * cos(ma)).toFloat(), (mr * yScale * sin(ma)).toFloat(), dp(1.6f * s.planetSize), bodyPaint)
+            val cx = px(0f); val cy = py(0f)
+            val r = max(2f, 34f * s)
+            val dim = 1f - sim.swarm * 0.4f
+            val breath = (1.0 + 0.04 * sin(t * 0.7)).toFloat()
+            glow.shader = RadialGradient(cx, cy, max(1f, r * 6f * breath),
+                intArrayOf(Color.argb((150 * dim).toInt(), 150, 215, 255),
+                    Color.argb((55 * dim).toInt(), 70, 140, 235), Color.argb(0, 30, 80, 190)),
+                floatArrayOf(0f, 0.32f, 1f), Shader.TileMode.CLAMP)
+            canvas.drawCircle(cx, cy, r * 6f * breath, glow)
+            glow.shader = null
+            if (sim.swarm > 0.05f) {
+                glow.shader = RadialGradient(cx, cy, max(1f, r * 9f),
+                    intArrayOf(Color.argb((70 * sim.swarm).toInt(), 255, 150, 70), Color.argb(0, 120, 40, 0)),
+                    floatArrayOf(0.3f, 1f), Shader.TileMode.CLAMP)
+                canvas.drawCircle(cx, cy, r * 9f, glow)
+                glow.shader = null
             }
-            canvas.restore()
+            dot.color = Color.rgb((235 * dim).toInt() + 15, (248 * dim).toInt() + 6, 255)
+            canvas.drawCircle(cx, cy, r, dot)
         }
-private fun drawEventWorld(canvas: Canvas, ev: OrreryCosmicEvent, p: Float, t: Double, pos: List<Triple<Float, Float, Float>>) {
-            val rnd = Random(ev.seed); val fade = min(1f, min(p / 0.12f, (1f - p) / 0.18f))
-            when (ev.type) {
-                OrreryEventType.SUPERNOVA -> {
-                    val r = dp(16f) + smooth(p) * maxOf(worldW, surfaceH.toFloat()) * 0.55f
-                    eventPaint.shader = RadialGradient(ev.x, ev.y, r.coerceAtLeast(1f), intArrayOf(argbA((230 * (1f - p) * fade).toInt(), Color.WHITE), argbA((120 * (1f - p) * fade).toInt(), Color.rgb(120, 200, 255)), Color.argb(0, 40, 90, 200)), floatArrayOf(0f, 0.4f, 1f), Shader.TileMode.CLAMP)
-                    canvas.drawCircle(ev.x, ev.y, r, eventPaint); eventPaint.shader = null
-                    eventPaint.color = argbA((255 * fade).toInt(), Color.rgb(240, 250, 255)); canvas.drawCircle(ev.x, ev.y, dp(5f) * (1f + p), eventPaint)
+
+         private fun drawBody(canvas: Canvas, i: Int, t: Double) {
+            val b = sim.bodies[i]
+            val cx = px(b.x); val cy = py(b.y)
+            val r = max(1.2f, b.radius * s * settings.planetSize)
+            if (cx + r * 4f < 0f || cx - r * 4f > sw || cy + r * 4f < 0f || cy - r * 4f > sh) return
+
+            if (b.destroyed) {
+                stroke.strokeWidth = dp(1f)
+                stroke.color = Color.argb(120, 150, 120, 110)
+                val rr = r * 1.5f
+                canvas.drawOval(RectF(cx - rr, cy - rr * yScale, cx + rr, cy + rr * yScale), stroke)
+                val rb = b.rebuild
+                if (rb > 0f) {
+                    val nr = max(1f, r * rb)
+                    glow.shader = RadialGradient(cx, cy, max(1f, r * 3f),
+                        intArrayOf(Color.argb((150 * rb).toInt(), 130, 255, 210), Color.argb(0, 40, 160, 130)),
+                        floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
+                    canvas.drawCircle(cx, cy, r * 3f, glow)
+                    glow.shader = null
+                    disc.shader = RadialGradient(cx - nr * 0.3f, cy - nr * 0.3f, max(1f, nr * 1.5f),
+                        intArrayOf(b.c1, b.c2), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
+                    canvas.drawCircle(cx, cy, nr, disc)
+                    disc.shader = null
+                    val rnd = Random(i * 31L + 5L)
+                    for (k in 0 until 26) {
+                        val a = rnd.nextFloat() * 6.283f + t.toFloat() * 0.6f
+                        val d = r * (3.2f - 2.4f * rb) * (0.5f + rnd.nextFloat())
+                        dot.color = Color.argb(190, 160, 255, 220)
+                        canvas.drawCircle(cx + cos(a) * d, cy + sin(a) * d * yScale, dp(1.2f), dot)
+                    }
                 }
-                OrreryEventType.ASTEROID_IMPACT -> {
-                    val tp = pos[ev.target]; val approach = (p / 0.45f).coerceIn(0f, 1f)
-                    if (p < 0.45f) {
-                        val dist = dp(520f) * (1f - approach)
-                        val ax = tp.first + cos(ev.angle) * dist; val ay = tp.second + sin(ev.angle) * dist * yScale
-                        eventStroke.color = argbA((200 * fade).toInt(), Color.rgb(255, 190, 120)); eventStroke.strokeWidth = dp(2.4f)
-                        canvas.drawLine(ax, ay, tp.first, tp.second, eventStroke)
-                        eventPaint.color = argbA((255 * fade).toInt(), Color.rgb(255, 230, 180)); canvas.drawCircle(ax, ay, dp(3f), eventPaint)
+                return
+            }
+
+            if (settings.glow > 0.05f) {
+                glow.shader = RadialGradient(cx, cy, max(1f, r * 2.6f),
+                    intArrayOf(Color.argb((70 * settings.glow).toInt(), Color.red(b.c1), Color.green(b.c1), Color.blue(b.c1)),
+                        Color.argb(0, 0, 0, 0)), floatArrayOf(0.35f, 1f), Shader.TileMode.CLAMP)
+                canvas.drawCircle(cx, cy, r * 2.6f, glow)
+                glow.shader = null
+            }
+
+            val sx = px(0f); val sy = py(0f)
+            val dx = sx - cx; val dy = sy - cy
+            val d = max(1f, sqrt(dx * dx + dy * dy))
+            val lx = cx + dx / d * r * 0.42f
+            val ly = cy + dy / d * r * 0.42f
+            disc.shader = RadialGradient(lx, ly, max(1f, r * 1.7f),
+                intArrayOf(b.c1, b.c2, Color.rgb(3, 5, 10)),
+                floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP)
+            canvas.drawCircle(cx, cy, r, disc)
+            disc.shader = null
+
+            if (b.pop > 1e3 && b.stage >= 4 && r > 5f) {
+                val n = min(48, max(4, ((log10(b.pop) - 3.0) * 7.0).toInt()))
+                val rnd = Random(i * 7919L)
+                val alpha = if (b.ruined) 60 else 210
+                for (k in 0 until n) {
+                    val a = rnd.nextFloat() * 6.283f
+                    val rr = sqrt(rnd.nextFloat()) * r * 0.93f
+                    val ox = cos(a) * rr; val oy = sin(a) * rr
+                    if (ox * dx + oy * dy < 0f) {
+                        dot.color = Color.argb(alpha, 255, 196, 110)
+                        canvas.drawCircle(cx + ox, cy + oy, max(0.6f, r * 0.035f), dot)
+                    }
+                }
+            }
+            if (b.ruined && r > 4f) {
+                val rnd = Random(i * 104729L)
+                for (k in 0 until 6) {
+                    val a = rnd.nextFloat() * 6.283f
+                    val rr = rnd.nextFloat() * r * 0.8f
+                    dot.color = Color.argb(150, 220, 80, 50)
+                    canvas.drawCircle(cx + cos(a) * rr, cy + sin(a) * rr, max(0.6f, r * 0.05f), dot)
+                }
+            }
+            if (b.scars > 0.02f) {
+                dot.color = Color.argb((110 * b.scars).toInt(), 60, 20, 12)
+                canvas.drawCircle(cx + r * 0.2f, cy + r * 0.15f, r * 0.75f, dot)
+            }
+            if (b.ring) {
+                canvas.save()
+                canvas.translate(cx, cy)
+                canvas.rotate(-16f)
+                stroke.strokeWidth = max(1f, r * 0.1f)
+                stroke.color = Color.argb(130, 226, 212, 176)
+                canvas.drawOval(-r * 2f, -r * 0.45f, r * 2f, r * 0.45f, stroke)
+                canvas.restore()
+            }
+            if (b.ringBuilt) {
+                stroke.strokeWidth = max(0.8f, dp(1f))
+                stroke.color = Color.argb(170, 130, 235, 255)
+                val rr = r * 1.55f
+                canvas.drawOval(RectF(cx - rr, cy - rr * 0.35f, cx + rr, cy + rr * 0.35f), stroke)
+            }
+            if (b.elevator) {
+                stroke.strokeWidth = max(0.6f, dp(0.7f))
+                stroke.color = Color.argb(150, 150, 245, 255)
+                canvas.drawLine(cx, cy - r, cx, cy - r * 2.4f, stroke)
+                dot.color = Color.argb(200, 180, 250, 255)
+                canvas.drawCircle(cx, cy - r * 2.4f, max(1f, dp(1.6f)), dot)
+            }
+            if (b.colonyOf >= 0) {
+                dot.color = Color.argb(200, 120, 230, 255)
+                canvas.drawCircle(cx + r * 1.35f, cy - r * 0.9f, max(1f, dp(1.8f)), dot)
+            }
+            if (b.flash > 0.01f) {
+                dot.color = Color.argb((170 * b.flash).toInt(),
+                    Color.red(b.flashColor), Color.green(b.flashColor), Color.blue(b.flashColor))
+                canvas.drawCircle(cx, cy, r * (1f + b.flash * 0.6f), dot)
+            }
+            if (settings.labels && r > 3f) {
+                small.color = Color.argb(150, 175, 210, 240)
+                canvas.drawText(b.name, cx + r + dp(5f), cy - dp(3f), small)
+            }
+        }
+
+        private fun drawEvent(canvas: Canvas, e: SimEvent, t: Double) {
+            val p = (e.t / e.dur).coerceIn(0f, 1f)
+            val fade = min(1f, min(p / 0.12f, (1f - p) / 0.15f))
+            val a = (200 * fade).toInt().coerceIn(0, 255)
+            when (e.type) {
+                0, 1 -> {
+                    val cx = px(e.x); val cy = py(e.y)
+                    val sx = px(0f); val sy = py(0f)
+                    val dx = cx - sx; val dy = cy - sy
+                    val d = max(1f, sqrt(dx * dx + dy * dy))
+                    val near = (300f / max(60f, d / max(0.001f, s))).coerceIn(0.3f, 1.6f)
+                    val ionL = dp(150f) * near
+                    stroke.strokeWidth = dp(2.2f)
+                    stroke.color = Color.argb(a, 130, 215, 255)
+                    canvas.drawLine(cx, cy, cx + dx / d * ionL, cy + dy / d * ionL, stroke)
+                    stroke.strokeWidth = dp(4f)
+                    stroke.color = Color.argb((a * 0.5f).toInt(), 255, 225, 170)
+                    val lag = e.rot + e.nu - 0.35f
+                    canvas.drawLine(cx, cy, cx + dx / d * ionL * 0.6f - cos(lag) * dp(40f),
+                        cy + dy / d * ionL * 0.6f - sin(lag) * dp(40f) * yScale, stroke)
+                    glow.shader = RadialGradient(cx, cy, max(1f, dp(16f)),
+                        intArrayOf(Color.argb(a, 235, 250, 255), Color.argb(0, 120, 210, 255)),
+                        floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
+                    canvas.drawCircle(cx, cy, dp(16f), glow)
+                    glow.shader = null
+                    dot.color = Color.WHITE
+                    canvas.drawCircle(cx, cy, dp(2.2f), dot)
+                }
+                2 -> {
+                    val A = sim.bodies[e.a]; val B = sim.bodies[e.b]
+                    val ax = px(A.x); val ay = py(A.y)
+                    val bx = px(B.x); val by = py(B.y)
+                    val mx = (ax + bx) / 2f; val my = (ay + by) / 2f
+                    val sx = px(0f); val sy = py(0f)
+                    val dx = mx - sx; val dy = my - sy
+                    val d = max(1f, sqrt(dx * dx + dy * dy))
+                    val qx = mx + dx / d * d * 0.3f
+                    val qy = my + dy / d * d * 0.3f
+                    path.rewind()
+                    path.moveTo(ax, ay)
+                    path.quadTo(qx, qy, bx, by)
+                    stroke.strokeWidth = dp(1.2f)
+                    stroke.color = Color.argb((a * 0.7f).toInt(), 130, 225, 255)
+                    stroke.pathEffect = DashPathEffect(floatArrayOf(dp(6f), dp(8f)), -e.t * dp(22f))
+                    canvas.drawPath(path, stroke)
+                    stroke.pathEffect = null
+                    val u = p
+                    val iu = 1f - u
+                    val rx = iu * iu * ax + 2 * iu * u * qx + u * u * bx
+                    val ry = iu * iu * ay + 2 * iu * u * qy + u * u * by
+                    val tx = 2 * iu * (qx - ax) + 2 * u * (bx - qx)
+                    val ty = 2 * iu * (qy - ay) + 2 * u * (by - qy)
+                    canvas.save()
+                    canvas.translate(rx, ry)
+                    canvas.rotate(Math.toDegrees(kotlin.math.atan2(ty.toDouble(), tx.toDouble())).toFloat())
+                    path.rewind()
+                    path.moveTo(dp(6f), 0f)
+                    path.lineTo(-dp(4f), -dp(2.6f))
+                    path.lineTo(-dp(4f), dp(2.6f))
+                    path.close()
+                    dot.color = Color.argb(255, 225, 245, 255)
+                    canvas.drawPath(path, dot)
+                    dot.color = Color.argb((180 * fade).toInt(), 255, 170, 90)
+                    canvas.drawCircle(-dp(5f), 0f, dp(2f), dot)
+                    canvas.restore()
+                }
+                3 -> {
+                    val b = sim.bodies[e.a]
+                    val bx = px(b.x); val by = py(b.y)
+                    val r = max(2f, b.radius * s * settings.planetSize)
+                    val hx = bx; val hy = by - r * 2.4f
+                    val startX = bx + sw * 0.6f; val startY = by - sh * 0.4f
+                    val ux: Float; val uy: Float
+                    if (p < 0.3f) {
+                        val k = smooth(p / 0.3f)
+                        ux = startX + (hx - startX) * k; uy = startY + (hy - startY) * k
+                    } else if (p < 0.75f) {
+                        ux = hx; uy = hy + sin(t * 2.0).toFloat() * dp(3f)
                     } else {
-                        val ip = smooth(((p - 0.45f) / 0.55f).coerceIn(0f, 1f))
-                        eventStroke.color = argbA((220 * (1f - ip) * fade).toInt(), Color.rgb(255, 150, 80)); eventStroke.strokeWidth = dp(2f)
-                        canvas.drawCircle(tp.first, tp.second, dp(8f) + ip * dp(70f), eventStroke)
-                        for (k in 0 until 14) {
-                            val a = rnd.nextFloat() * 6.283f; val d = ip * dp(90f) * (0.4f + rnd.nextFloat())
-                            eventPaint.color = argbA((180 * (1f - ip)).toInt(), Color.rgb(255, 170, 90))
-                            canvas.drawCircle(tp.first + cos(a) * d, tp.second + sin(a) * d * yScale, dp(1.4f), eventPaint)
-                        }
-                        eventPaint.color = Color.argb((140 * (1f - ip)).toInt(), 40, 10, 5)
-                        canvas.drawCircle(tp.first, tp.second, dp(planets[ev.target].sizeDp * settings.planetSize) * 1.15f, eventPaint)
+                        val k = smooth((p - 0.75f) / 0.25f)
+                        ux = hx + (startX - hx) * k; uy = hy + (startY - hy) * k
+                    }
+                    if (p > 0.33f && p < 0.72f) {
+                        val ba = (110 * fade).toInt()
+                        path.rewind()
+                        path.moveTo(ux - r * 0.35f, uy)
+                        path.lineTo(ux + r * 0.35f, uy)
+                        path.lineTo(bx + r * 0.8f, by)
+                        path.lineTo(bx - r * 0.8f, by)
+                        path.close()
+                        disc.shader = LinearGradient(ux, uy, bx, by,
+                            intArrayOf(Color.argb(ba, 150, 255, 210), Color.argb(0, 120, 255, 200)),
+                            floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
+                        canvas.drawPath(path, disc)
+                        disc.shader = null
+                    }
+                    dot.color = Color.argb(255, 190, 205, 220)
+                    canvas.drawOval(RectF(ux - r * 0.9f, uy - r * 0.22f, ux + r * 0.9f, uy + r * 0.22f), dot)
+                    dot.color = Color.argb(230, 150, 230, 255)
+                    canvas.drawOval(RectF(ux - r * 0.4f, uy - r * 0.5f, ux + r * 0.4f, uy + r * 0.1f), dot)
+                    for (k in 0 until 5) {
+                        val lx = ux - r * 0.7f + r * 1.4f * k / 4f
+                        val on = ((t * 4.0 + k).toInt() % 5) == 0
+                        dot.color = Color.argb(if (on) 255 else 90, 255, 210, 120)
+                        canvas.drawCircle(lx, uy + r * 0.12f, max(0.8f, dp(1.2f)), dot)
                     }
                 }
-                OrreryEventType.COMET -> {
-                    val travel = p * 1.5f - 0.25f; val hx = ev.x + cos(ev.angle) * worldW * travel; val hy = ev.y + sin(ev.angle) * surfaceH * travel * 0.6f
-                    val tl = dp(200f); val tx = hx - cos(ev.angle) * tl; val ty = hy - sin(ev.angle) * tl * yScale
-                    val c1 = Color.argb(0, 120, 220, 255); val c2 = argbA((220 * fade).toInt(), Color.rgb(190, 240, 255))
-                    eventStroke.shader = LinearGradient(tx, ty, hx, hy, intArrayOf(c1, c2), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
-                    eventStroke.strokeWidth = dp(3f); canvas.drawLine(tx, ty, hx, hy, eventStroke); eventStroke.shader = null
-                    eventPaint.shader = RadialGradient(hx, hy, dp(26f), intArrayOf(argbA((220 * fade).toInt(), Color.WHITE), Color.argb(0, 120, 220, 255)), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
-                    canvas.drawCircle(hx, hy, dp(26f), eventPaint); eventPaint.shader = null; eventPaint.color = Color.WHITE; canvas.drawCircle(hx, hy, dp(2.6f), eventPaint)
+                15 -> {
+                    val b = sim.bodies[e.a]
+                    val bx = px(b.x); val by = py(b.y)
+                    val sx = px(0f); val sy = py(0f)
+                    stroke.strokeWidth = dp(1.6f)
+                    stroke.color = Color.argb((a * 0.6f).toInt(), 130, 255, 210)
+                    stroke.pathEffect = DashPathEffect(floatArrayOf(dp(4f), dp(10f)), -e.t * dp(30f))
+                    canvas.drawLine(sx, sy, bx, by, stroke)
+                    stroke.pathEffect = null
+                    val k = (p * 1.2f).coerceIn(0f, 1f)
+                    val ax = sx + (bx - sx) * k; val ay = sy + (by - sy) * k
+                    dot.color = Color.argb(255, 180, 255, 230)
+                    canvas.drawCircle(ax, ay, dp(3f), dot)
                 }
-                OrreryEventType.SOLAR_FLARE -> {
-                    val fp = smooth(p); eventStroke.color = argbA((200 * fade * (1f - p * 0.5f)).toInt(), Color.rgb(255, 190, 90)); eventStroke.strokeWidth = dp(2f)
+                4 -> {
+                    val b = sim.bodies[e.a]
+                    val cx = px(b.x) + dp(120f); val cy = py(b.y) - dp(150f)
+                    val rr = dp(20f) + smooth(p) * max(sw, sh) * 0.7f
+                    glow.shader = RadialGradient(cx, cy, max(1f, rr),
+                        intArrayOf(Color.argb((220 * (1f - p) * fade).toInt(), 255, 250, 235),
+                            Color.argb((110 * (1f - p) * fade).toInt(), 130, 200, 255),
+                            Color.argb(0, 40, 90, 200)),
+                        floatArrayOf(0f, 0.4f, 1f), Shader.TileMode.CLAMP)
+                    canvas.drawCircle(cx, cy, rr, glow)
+                    glow.shader = null
+                }
+                5 -> {
+                    val b = sim.bodies[e.a]
+                    val bx = px(b.x); val by = py(b.y)
+                    if (p < 0.55f) {
+                        val k = 1f - p / 0.55f
+                        val ax = bx + dp(420f) * k; val ay = by - dp(300f) * k
+                        stroke.strokeWidth = dp(2.4f)
+                        stroke.color = Color.argb(a, 255, 190, 120)
+                        canvas.drawLine(ax, ay, bx, by, stroke)
+                    } else {
+                        val k = smooth(((p - 0.55f) / 0.45f).coerceIn(0f, 1f))
+                        stroke.strokeWidth = dp(2f)
+                        stroke.color = Color.argb((220 * (1f - k) * fade).toInt(), 255, 150, 80)
+                        canvas.drawCircle(bx, by, dp(10f) + k * dp(90f), stroke)
+                    }
+                }
+                6 -> {
+                    val cx = px(0f); val cy = py(0f)
+                    val fp = smooth(p)
+                    stroke.strokeWidth = dp(2f)
+                    stroke.color = Color.argb((200 * fade).toInt(), 255, 195, 100)
                     for (k in 0 until 3) {
-                        val a = ev.angle + k * 2.1f; val sx = cx + cos(a) * dp(14f); val sy = cy + sin(a) * dp(14f) * yScale
-                        val ex = cx + cos(a) * dp(14f + 120f * fp); val ey = cy + sin(a) * dp(14f + 120f * fp) * yScale
-                        val cpx = (sx + ex) / 2f + cos(a + 1.57f) * dp(60f) * fp; val cpy = (sy + ey) / 2f + sin(a + 1.57f) * dp(60f) * fp
-                        eventPath.rewind(); eventPath.moveTo(sx, sy); eventPath.quadTo(cpx, cpy, ex, ey); canvas.drawPath(eventPath, eventStroke)
+                        val ang = e.rot + k * 2.1f
+                        val r0 = 34f * s
+                        val r1 = r0 + dp(130f) * fp
+                        path.rewind()
+                        path.moveTo(cx + cos(ang) * r0, cy + sin(ang) * r0 * yScale)
+                        path.quadTo(cx + cos(ang + 0.5f) * r1 * 0.8f, cy + sin(ang + 0.5f) * r1 * 0.8f * yScale,
+                            cx + cos(ang) * r1, cy + sin(ang) * r1 * yScale)
+                        canvas.drawPath(path, stroke)
                     }
                 }
-                OrreryEventType.METEOR_SHOWER -> {
-                    for (k in 0 until 16) {
-                        val sp = (p * 1.7f - k * 0.055f).coerceIn(0f, 1f); if (sp <= 0f || sp >= 1f) continue
-                        val sx = rnd.nextFloat() * worldW; val sy = rnd.nextFloat() * surfaceH * 0.6f; val len = dp(90f) * (1f - sp)
-                        val mx = sx + cos(ev.angle) * len; val my = sy + sin(ev.angle) * len
-                        eventStroke.color = Color.argb((180 * (1f - sp) * fade).toInt(), 200, 230, 255); eventStroke.strokeWidth = dp(1.4f)
-                        canvas.drawLine(mx, my, sx, sy, eventStroke)
+                7 -> {
+                    val rnd = Random(e.seed)
+                    for (k in 0 until 14) {
+                        val sp = (p * 1.7f - k * 0.06f).coerceIn(0f, 1f)
+                        if (sp <= 0f || sp >= 1f) continue
+                        val x = rnd.nextFloat() * sw; val y = rnd.nextFloat() * sh * 0.7f
+                        val len = dp(80f) * (1f - sp)
+                        stroke.strokeWidth = dp(1.3f)
+                        stroke.color = Color.argb((170 * (1f - sp)).toInt(), 205, 230, 255)
+                        canvas.drawLine(x + len, y + len * 0.4f, x, y, stroke)
                     }
                 }
-                OrreryEventType.ROGUE_BLACKHOLE -> {
-                    val bx = ev.x + cos(ev.angle) * worldW * (p - 0.5f) * 0.8f; val by = ev.y + sin(ev.angle) * surfaceH * (p - 0.5f) * 0.5f; val r = dp(26f)
-                    eventPaint.shader = RadialGradient(bx, by, r * 4f, intArrayOf(Color.argb(0, 0, 0, 0), argbA((140 * fade).toInt(), Color.rgb(255, 170, 80)), Color.argb(0, 0, 0, 0)), floatArrayOf(0.35f, 0.5f, 1f), Shader.TileMode.CLAMP)
-                    canvas.drawCircle(bx, by, r * 4f, eventPaint); eventPaint.shader = null; eventPaint.color = Color.BLACK; canvas.drawCircle(bx, by, r, eventPaint)
-                    eventStroke.color = argbA((200 * fade).toInt(), Color.rgb(255, 200, 120)); eventStroke.strokeWidth = dp(1.6f); canvas.drawCircle(bx, by, r * 1.5f, eventStroke)
-                    for (k in 0 until 10) {
-                        val a = rnd.nextFloat() * 6.283f; val d = r * (2f + rnd.nextFloat() * 3f)
-                        eventStroke.color = Color.argb((90 * fade).toInt(), 180, 220, 255)
-                        canvas.drawLine(bx + cos(a) * d, by + sin(a) * d, bx + cos(a) * (d + dp(14f)), by + sin(a) * (d + dp(14f)), eventStroke)
+                8 -> {
+                    val b = sim.bodies[e.a]
+                    val bx = px(b.x); val by = py(b.y)
+                    val rr = dp(26f)
+                    glow.shader = RadialGradient(bx, by, rr * 4f,
+                        intArrayOf(Color.argb(0, 0, 0, 0), Color.argb((150 * fade).toInt(), 255, 170, 80), Color.argb(0, 0, 0, 0)),
+                        floatArrayOf(0.34f, 0.5f, 1f), Shader.TileMode.CLAMP)
+                    canvas.drawCircle(bx, by, rr * 4f, glow)
+                    glow.shader = null
+                    dot.color = Color.BLACK
+                    canvas.drawCircle(bx, by, rr, dot)
+                    stroke.strokeWidth = dp(1.6f)
+                    stroke.color = Color.argb((210 * fade).toInt(), 255, 200, 120)
+                    canvas.drawCircle(bx, by, rr * 1.5f, stroke)
+                }
+                9 -> {
+                    val cx = px(0f); val cy = py(0f)
+                    val len = max(sw, sh) * 1.2f
+                    canvas.save()
+                    canvas.translate(cx, cy)
+                    canvas.rotate(e.rot * 57.3f + smooth(p) * 25f)
+                    glow.shader = LinearGradient(0f, 0f, len, 0f,
+                        intArrayOf(Color.argb(0, 120, 220, 255), Color.argb((200 * fade).toInt(), 170, 245, 255), Color.argb(0, 120, 220, 255)),
+                        floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP)
+                    val rw = dp(9f) * (1f + smooth(p))
+                    canvas.drawRect(-len, -rw, len, rw, glow)
+                    glow.shader = null
+                    canvas.restore()
+                }
+                10 -> {
+                    stroke.strokeWidth = dp(1.4f)
+                    stroke.color = Color.argb((150 * fade).toInt(), 255, 220, 140)
+                    path.rewind()
+                    var first = true
+                    for (b in sim.bodies) {
+                        if (b.parent >= 0) continue
+                        if (first) { path.moveTo(px(b.x), py(b.y)); first = false }
+                        else path.lineTo(px(b.x), py(b.y))
                     }
+                    canvas.drawPath(path, stroke)
                 }
-                OrreryEventType.GAMMA_BURST -> {
-                    val gp = smooth(p); val len = maxOf(worldW, surfaceH.toFloat()) * 1.2f
-                    canvas.save(); canvas.translate(cx, cy); canvas.rotate(ev.angle * 57.2958f + gp * 30f)
-                    eventPaint.shader = LinearGradient(0f, 0f, len, 0f, intArrayOf(Color.argb(0, 120, 220, 255), argbA((200 * fade).toInt(), Color.rgb(160, 240, 255)), Color.argb(0, 120, 220, 255)), floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP)
-                    val rw = dp(10f) * (1f + gp); canvas.drawRect(0f, -rw, len, rw, eventPaint); canvas.drawRect(-len, -dp(6f), 0f, dp(6f), eventPaint)
-                    eventPaint.shader = null; canvas.restore()
-                }
-                OrreryEventType.SYZYGY -> {
-                    eventStroke.color = argbA((160 * fade).toInt(), Color.rgb(255, 215, 130)); eventStroke.strokeWidth = dp(1.6f); eventPath.rewind()
-                    eventPath.moveTo(pos[0].first, pos[0].second); for (i in 1 until pos.size) eventPath.lineTo(pos[i].first, pos[i].second)
-                    canvas.drawPath(eventPath, eventStroke)
-                    for (q in pos) { eventPaint.color = argbA((180 * fade).toInt(), Color.rgb(255, 230, 160)); canvas.drawCircle(q.first, q.second, dp(4f), eventPaint) }
-                }
-                OrreryEventType.RING_SHIMMER -> {
-                    val q = pos[5]; val size = dp(planets[5].sizeDp * settings.planetSize)
+                11 -> {
+                    val b = sim.bodies[2]
+                    val bx = px(b.x); val by = py(b.y)
+                    val r = max(3f, b.radius * s * settings.planetSize)
                     for (k in 0 until 3) {
-                        val rr = size * (2.2f + k * 0.5f) + smooth(p) * dp(10f)
-                        eventStroke.color = Color.argb((140 * fade * (1f - k * 0.25f)).toInt(), 200, 230, 255); eventStroke.strokeWidth = dp(1.2f)
-                        canvas.save(); canvas.translate(q.first, q.second); canvas.rotate(-18f + k * 8f * smooth(p))
-                        canvas.drawOval(-rr, -rr * 0.4f, rr, rr * 0.4f, eventStroke); canvas.restore()
+                        val rr = r * (1.5f + k * 0.4f)
+                        stroke.strokeWidth = dp(1.5f)
+                        stroke.color = Color.argb((150 * fade * (1f - k * 0.3f)).toInt(), 90, 255, 175)
+                        canvas.drawArc(RectF(bx - rr, by - rr, bx + rr, by + rr), 200f + k * 18f, 140f, false, stroke)
                     }
                 }
-                OrreryEventType.EARTH_AURORA -> {
-                    val q = pos[2]; val size = dp(planets[2].sizeDp * settings.planetSize)
-                    for (k in 0 until 3) {
-                        val rr = size * (1.6f + k * 0.5f) + sin(t * 2 + k).toFloat() * dp(2f)
-                        eventStroke.color = Color.argb((150 * fade * (1f - k * 0.3f)).toInt(), 80, 255, 170); eventStroke.strokeWidth = dp(1.6f)
-                        canvas.drawArc(RectF(q.first - rr, q.second - rr, q.first + rr, q.second + rr), 200f + k * 20f, 140f, false, eventStroke)
-                    }
-                }
-                OrreryEventType.WORMHOLE -> {
-                    val r = dp(30f) + smooth(p) * dp(60f)
+                12 -> {
+                    val cx = sw * 0.5f; val cy = sh * 0.35f
+                    val r = dp(30f) + smooth(p) * dp(55f)
                     for (k in 0 until 6) {
-                        val rr = r * (1f - k * 0.13f); val col = if (k % 2 == 0) 120 else 200
-                        eventStroke.color = Color.argb((160 * fade * (1f - k * 0.14f)).toInt(), col, 160, 255); eventStroke.strokeWidth = dp(1.4f)
-                        canvas.save(); canvas.translate(ev.x, ev.y); canvas.rotate((t * 20f + k * 15f).toFloat())
-                        canvas.drawOval(-rr, -rr * 0.6f, rr, rr * 0.6f, eventStroke); canvas.restore()
+                        val rr = r * (1f - k * 0.13f)
+                        stroke.strokeWidth = dp(1.3f)
+                        stroke.color = Color.argb((160 * fade * (1f - k * 0.14f)).toInt(), if (k % 2 == 0) 130 else 205, 165, 255)
+                        canvas.save()
+                        canvas.translate(cx, cy)
+                        canvas.rotate((t * 18.0 + k * 15.0).toFloat())
+                        canvas.drawOval(-rr, -rr * 0.6f, rr, rr * 0.6f, stroke)
+                        canvas.restore()
                     }
-                    eventPaint.color = Color.argb((200 * fade).toInt(), 10, 8, 24); canvas.drawCircle(ev.x, ev.y, r * 0.35f, eventPaint)
                 }
-                OrreryEventType.NEBULA_BLOOM -> {
+                13 -> {
+                    val rnd = Random(e.seed)
                     for (k in 0 until 3) {
-                        val nx = ev.x + cos(ev.angle + k * 2f) * worldW * 0.15f * p; val ny = ev.y + sin(ev.angle + k * 2f) * surfaceH * 0.1f * p
-                        val r = maxOf(worldW, surfaceH.toFloat()) * (0.25f + 0.1f * k)
+                        val nx = rnd.nextFloat() * sw; val ny = rnd.nextFloat() * sh
+                        val rr = max(sw, sh) * (0.25f + 0.1f * k)
                         val c = when (k) { 0 -> Color.rgb(60, 140, 255); 1 -> Color.rgb(160, 80, 255); else -> Color.rgb(60, 220, 200) }
-                        val alpha = (40 * fade).toInt()
-                        eventPaint.shader = RadialGradient(nx, ny, r, intArrayOf(Color.argb(alpha, Color.red(c), Color.green(c), Color.blue(c)), Color.argb(0, 0, 0, 0)), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
-                        canvas.drawCircle(nx, ny, r, eventPaint)
+                        glow.shader = RadialGradient(nx, ny, rr,
+                            intArrayOf(Color.argb((40 * fade).toInt(), Color.red(c), Color.green(c), Color.blue(c)), Color.argb(0, 0, 0, 0)),
+                            floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
+                        canvas.drawCircle(nx, ny, rr, glow)
+                        glow.shader = null
                     }
-                    eventPaint.shader = null
                 }
-                OrreryEventType.BINARY_COMPANION -> {
-                    val bx = worldW * (p * 1.4f - 0.2f); val by = surfaceH * 0.25f; val r = dp(10f)
-                    eventPaint.shader = RadialGradient(bx, by, r * 6f, intArrayOf(argbA((200 * fade).toInt(), Color.rgb(255, 210, 140)), Color.argb(0, 255, 140, 60)), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
-                    canvas.drawCircle(bx, by, r * 6f, eventPaint); eventPaint.shader = null
-                    eventPaint.color = argbA((255 * fade).toInt(), Color.rgb(255, 235, 200)); canvas.drawCircle(bx, by, r, eventPaint)
+                14 -> {
+                    val bx = sw * (p * 1.4f - 0.2f); val by = sh * 0.22f
+                    val rr = dp(10f)
+                    glow.shader = RadialGradient(bx, by, rr * 6f,
+                        intArrayOf(Color.argb((200 * fade).toInt(), 255, 215, 145), Color.argb(0, 255, 140, 60)),
+                        floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
+                    canvas.drawCircle(bx, by, rr * 6f, glow)
+                    glow.shader = null
+                    dot.color = Color.rgb(255, 238, 205)
+                    canvas.drawCircle(bx, by, rr, dot)
                 }
-                OrreryEventType.VACUUM_DECAY -> {
-                    val r = smooth(p) * maxOf(worldW, surfaceH.toFloat()) * 1.15f
-                    eventPaint.color = Color.argb((235 * fade).toInt(), 2, 2, 6); canvas.drawCircle(ev.x, ev.y, r, eventPaint)
-                    eventStroke.color = argbA((230 * fade).toInt(), Color.rgb(140, 240, 255)); eventStroke.strokeWidth = dp(2.5f); canvas.drawCircle(ev.x, ev.y, r, eventStroke)
+                16 -> {
+                    val b = sim.bodies[10]
+                    val bx = px(b.x); val by = py(b.y)
+                    val r = max(3f, b.radius * s * settings.planetSize)
+                    for (k in 0 until 3) {
+                        val rr = r * (2.1f + k * 0.4f) + smooth(p) * dp(8f)
+                        stroke.strokeWidth = dp(1.1f)
+                        stroke.color = Color.argb((140 * fade * (1f - k * 0.25f)).toInt(), 205, 235, 255)
+                        canvas.save()
+                        canvas.translate(bx, by)
+                        canvas.rotate(-16f + k * 7f * smooth(p))
+                        canvas.drawOval(-rr, -rr * 0.4f, rr, rr * 0.4f, stroke)
+                        canvas.restore()
+                    }
                 }
             }
         }
 
-        private fun drawEventScreen(canvas: Canvas, ev: OrreryCosmicEvent, p: Float, w: Float, h: Float) {
-            val fade = min(1f, min(p / 0.1f, (1f - p) / 0.15f))
-            if (ev.type == OrreryEventType.SUPERNOVA || ev.type == OrreryEventType.GAMMA_BURST) {
-                val fl = if (p < 0.25f) smooth(p / 0.25f) else 1f - smooth((p - 0.25f) / 0.75f)
-                eventPaint.shader = null; eventPaint.color = Color.argb((70 * fl * fade).toInt(), 200, 235, 255)
-                canvas.drawRect(0f, 0f, w, h, eventPaint)
+        private fun drawHud(canvas: Canvas) {
+            small.color = Color.argb(170, 130, 200, 240)
+            canvas.drawText("K " + String.format(Locale.US, "%.2f", sim.kIndex) +
+                "  ·  КОЛОНИЙ " + sim.colonies + "  ·  РОЙ " + (sim.swarm * 100).toInt() + "%",
+                dp(16f), dp(28f), small)
+            val ci = sim.callout
+            if (ci >= 0 && ci < sim.bodies.size) {
+                val b = sim.bodies[ci]
+                val cx = px(b.x); val cy = py(b.y)
+                val r = max(2f, b.radius * s * settings.planetSize)
+                val lx = cx + r + dp(14f); val ly = cy - r - dp(14f)
+                stroke.strokeWidth = dp(0.9f)
+                stroke.color = Color.argb(140, 140, 215, 245)
+                canvas.drawLine(cx + r * 0.7f, cy - r * 0.7f, lx, ly, stroke)
+                canvas.drawLine(lx, ly, lx + dp(70f), ly, stroke)
+                val p = b.pop
+                val ps = when {
+                    p >= 1e12 -> String.format(Locale.US, "%.1f трлн", p / 1e12)
+                    p >= 1e9 -> String.format(Locale.US, "%.1f млрд", p / 1e9)
+                    p >= 1e6 -> String.format(Locale.US, "%.1f млн", p / 1e6)
+                    else -> String.format(Locale.US, "%.0f тыс", p / 1e3)
+                }
+                small.color = Color.argb(220, 200, 235, 255)
+                canvas.drawText(b.name + " · " + ps, lx + dp(4f), ly - dp(5f), small)
+                small.color = Color.argb(150, 130, 195, 230)
+                canvas.drawText(sim.stageName(b.stage), lx + dp(4f), ly + dp(11f), small)
             }
-            labelPaint.color = Color.argb((170 * fade).toInt(), 190, 220, 245)
-            canvas.drawText("✦ " + ev.type.title, dp(16f), h - dp(44f), labelPaint)
-            if (ev.type.cat && p > 0.7f) {
-                val rp = smooth(((p - 0.7f) / 0.3f).coerceIn(0f, 1f))
-                eventPaint.color = Color.argb((235 * rp).toInt(), 1, 2, 5); canvas.drawRect(0f, 0f, w, h, eventPaint)
-                val ta = (255 * min(1f, rp * 2f)).toInt()
-                textPaint.color = Color.argb(ta, 210, 235, 255); textPaint.textSize = dp(16f)
-                canvas.drawText("ПЕРЕЗАПУСК ВСЕЛЕННОЙ", w / 2f, h / 2f - dp(8f), textPaint)
-                textPaint.textSize = dp(11f); textPaint.color = Color.argb((ta * 0.7f).toInt(), 140, 180, 215)
-                canvas.drawText("восстановление модели орбит…", w / 2f, h / 2f + dp(16f), textPaint)
-                eventStroke.color = Color.argb(ta, 90, 180, 230); eventStroke.strokeWidth = dp(2f)
-                canvas.drawArc(RectF(w / 2f - dp(26f), h / 2f + dp(34f), w / 2f + dp(26f), h / 2f + dp(86f)), -90f, 360f * rp, false, eventStroke)
-                textPaint.textSize = dp(12f); textPaint.color = Color.argb(185, 210, 230, 245)
-            }
+            if (!settings.date) return
+            cal.timeInMillis = System.currentTimeMillis()
+            val date = String.format(Locale.US, "%02d.%02d.%04d  ·  %02d:%02d",
+                cal.get(Calendar.DAY_OF_MONTH), cal.get(Calendar.MONTH) + 1, cal.get(Calendar.YEAR),
+                cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE))
+            val showFact = settings.facts && sim.fact.isNotEmpty() && (System.currentTimeMillis() / 12000L) % 2L == 1L
+            txt.textAlign = Paint.Align.CENTER
+            txt.color = if (showFact) Color.argb(175, 165, 215, 245) else Color.argb(190, 210, 230, 245)
+            canvas.drawText(if (showFact) sim.fact else date, sw / 2f, sh - dp(22f), txt)
+            txt.textAlign = Paint.Align.LEFT
         }
     }
 }
-        
