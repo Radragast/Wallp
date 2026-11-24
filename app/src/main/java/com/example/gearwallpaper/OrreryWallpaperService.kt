@@ -11,6 +11,7 @@ import android.view.SurfaceHolder
 import java.util.Calendar
 import java.util.Locale
 import java.util.Random
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.log10
 import kotlin.math.max
@@ -57,6 +58,11 @@ class OrreryWallpaperService : WallpaperService() {
         private val sim = OrrerySim()
         private val rng = Random(7L)
         private var stars = emptyList<OrreryStar>()
+        private val tex = HashMap<Int, Bitmap>()
+        private val tints = HashMap<Int, PorterDuffColorFilter>()
+        private var shadeBmp: Bitmap? = null
+        private var glowBmp: Bitmap? = null
+
         private var density = 1f
         private var baseScale = 1f
         private var sw = 0f
@@ -67,14 +73,14 @@ class OrreryWallpaperService : WallpaperService() {
         private var camX = 0f
         private var camY = 0f
         private var camZoom = 1f
-        private var fromX = 0f
-        private var fromY = 0f
-        private var fromZ = 1f
-        private var toX = 0f
-        private var toY = 0f
-        private var toZ = 1f
-        private var blend = 1f
-        private var shotTimer = 6f
+        private var shotT = 0f
+        private var targetIdx = 2
+        private var closeZ = 4f
+        private val wideZ = 1f
+        private val inDur = 7f
+        private val holdDur = 5f
+        private val outDur = 13f
+        private val wideDur = 9f
 
         private val bg = Paint()
         private val nebA = Paint()
@@ -85,11 +91,18 @@ class OrreryWallpaperService : WallpaperService() {
         private val disc = Paint(Paint.ANTI_ALIAS_FLAG)
         private val dot = Paint(Paint.ANTI_ALIAS_FLAG)
         private val stroke = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val txt = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val bmpPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+        private val glowPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+        private val cardFill = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val cardEdge = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val title = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val body = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val tag = Paint(Paint.ANTI_ALIAS_FLAG)
         private val small = Paint(Paint.ANTI_ALIAS_FLAG)
         private val path = Path()
         private val cal = Calendar.getInstance()
-        private val dash = DashPathEffect(floatArrayOf(7f, 9f), 0f)
+        private val gold = Color.rgb(201, 162, 39)
+        private val goldSoft = Color.rgb(228, 199, 124)
 
         init {
             settings = OrreryPrefs.read(prefs)
@@ -97,7 +110,10 @@ class OrreryWallpaperService : WallpaperService() {
             orb.style = Paint.Style.STROKE
             stroke.style = Paint.Style.STROKE
             stroke.strokeCap = Paint.Cap.ROUND
-            txt.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+            cardEdge.style = Paint.Style.STROKE
+            title.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+            body.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+            tag.typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
             small.typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
         }
 
@@ -166,6 +182,7 @@ class OrreryWallpaperService : WallpaperService() {
         private fun smooth(p: Float) = p * p * (3f - 2f * p)
         private fun px(x: Float) = (x - camX) * s + sw / 2f + pageShift
         private fun py(y: Float) = (y * yScale - camY) * s + sh / 2f
+        private fun rad(b: SimBody) = max(1.2f, b.radius * s * settings.planetSize)
 
         private fun rebuild() {
             val w = surfaceW.toFloat()
@@ -174,8 +191,18 @@ class OrreryWallpaperService : WallpaperService() {
             layoutDirty = false
             sw = w; sh = h
             density = resources.displayMetrics.density
-            baseScale = min(w, h) / 1500f
+            baseScale = min(w, h) / 1700f
             yScale = 1f - 0.6f * settings.tilt
+            if (tex.isEmpty()) {
+                for (i in sim.bodies.indices) {
+                    val b = sim.bodies[i]
+                    val size = if (b.parent >= 0) 192 else 288
+                    tex[i] = OrreryTextures.body(b.name, b.c1, b.c2, size, 1000L + i * 37L)
+                    tints[i] = PorterDuffColorFilter(b.c1, PorterDuff.Mode.SRC_IN)
+                }
+                shadeBmp = OrreryTextures.shade(256)
+                glowBmp = OrreryTextures.glow(128)
+            }
             val r = Random(42L)
             stars = List((150 * settings.stars).toInt().coerceAtLeast(30)) {
                 OrreryStar(r.nextFloat() * w, r.nextFloat() * h,
@@ -191,40 +218,29 @@ class OrreryWallpaperService : WallpaperService() {
                 intArrayOf(Color.argb(18, 110, 60, 180), Color.argb(0, 0, 0, 0)),
                 floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
             vig.shader = RadialGradient(w / 2f, h / 2f, max(w, h) * 0.74f,
-                intArrayOf(Color.argb(0, 0, 0, 0), Color.argb(0, 0, 0, 0), Color.argb(185, 0, 0, 0)),
+                intArrayOf(Color.argb(0, 0, 0, 0), Color.argb(0, 0, 0, 0), Color.argb(180, 0, 0, 0)),
                 floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP)
             orb.strokeWidth = dp(0.8f)
-            txt.textSize = dp(12f)
-            txt.letterSpacing = 0.1f
+            title.textSize = dp(10.5f)
+            title.letterSpacing = 0.16f
+            body.textSize = dp(11.5f)
+            tag.textSize = dp(8.5f)
+            tag.letterSpacing = 0.2f
             small.textSize = dp(10f)
+            cardEdge.strokeWidth = dp(0.9f)
         }
 
-        private fun pickShot() {
-            fromX = camX; fromY = camY; fromZ = camZoom
-            blend = 0f
-            shotTimer = 24f + rng.nextFloat() * 22f
-            val ev = sim.events.firstOrNull { it.type == 0 || it.type == 1 || it.type == 3 || it.type == 15 }
-            if (ev != null && rng.nextFloat() < 0.55f) {
-                if (ev.type == 0 || ev.type == 1) { toX = ev.x; toY = ev.y * yScale; toZ = 1.6f }
-                else {
-                    val b = sim.bodies[ev.a]
-                    toX = b.x; toY = b.y * yScale; toZ = 4.5f
-                }
-                return
-            }
-            val roll = rng.nextFloat()
-            if (roll < 0.3f) { toX = 0f; toY = 0f; toZ = 0.95f; return }
-            if (roll < 0.42f) { toX = 0f; toY = 0f; toZ = 2.4f; return }
+        private fun pickTarget() {
             val live = ArrayList<Int>()
             for (i in sim.bodies.indices) {
                 val b = sim.bodies[i]
                 if (b.pop > 1e3 || b.destroyed || b.scars > 0.3f) live.add(i)
             }
-            val idx = if (live.isNotEmpty() && rng.nextFloat() < 0.7f) live[rng.nextInt(live.size)]
+            targetIdx = if (live.isNotEmpty() && rng.nextFloat() < 0.65f) live[rng.nextInt(live.size)]
             else rng.nextInt(sim.bodies.size)
-            val b = sim.bodies[idx]
-            toX = b.x; toY = b.y * yScale
-            toZ = if (b.parent >= 0) 6.5f else 4.2f + rng.nextFloat() * 2.2f
+            val b = sim.bodies[targetIdx]
+            val want = min(sw, sh) * (if (b.parent >= 0) 0.075f else 0.115f)
+            closeZ = (want / max(0.5f, b.radius * settings.planetSize * baseScale)).coerceIn(2.5f, 26f)
         }
 
         private fun render(t: Double) {
@@ -236,23 +252,28 @@ class OrreryWallpaperService : WallpaperService() {
                 val dt = if (lastT == 0.0) 0.016f else (t - lastT).toFloat().coerceIn(0f, 0.05f)
                 lastT = t
                 sim.civSpeed = settings.civSpeed
+                sim.moonSpeed = settings.moonSpeed
                 sim.eventRate = settings.rate
                 sim.eventsOn = settings.events
                 sim.catOn = settings.catastrophes
                 sim.update(dt, settings.speed)
 
                 if (settings.camera) {
-                    shotTimer -= dt
-                    if (shotTimer <= 0f) pickShot()
-                    blend = min(1f, blend + dt / 8f)
-                    val e = smooth(blend)
-                    camX = fromX + (toX - fromX) * e
-                    camY = fromY + (toY - fromY) * e
-                    camZoom = fromZ + (toZ - fromZ) * e
-                    camX += sin(t * 0.07).toFloat() * 6f
-                    camY += cos(t * 0.05).toFloat() * 4f
+                    shotT += dt
+                    val total = inDur + holdDur + outDur + wideDur
+                    if (shotT >= total) { shotT = 0f; pickTarget() }
+                    val k = when {
+                        shotT < inDur -> smooth(shotT / inDur)
+                        shotT < inDur + holdDur -> 1f
+                        shotT < inDur + holdDur + outDur -> 1f - smooth((shotT - inDur - holdDur) / outDur)
+                        else -> 0f
+                    }
+                    val b = sim.bodies[targetIdx]
+                    camX = b.x * k + sin(t * 0.07).toFloat() * 5f
+                    camY = b.y * yScale * k + cos(t * 0.05).toFloat() * 4f
+                    camZoom = wideZ + (closeZ - wideZ) * k
                 } else {
-                    camX = 0f; camY = 0f; camZoom = 0.95f
+                    camX = 0f; camY = 0f; camZoom = wideZ
                 }
                 s = baseScale * camZoom * settings.systemScale
                 pageShift = if (settings.multiScreen) -(xOffset - 0.5f) * sw * (pages - 1) * 0.5f else 0f
@@ -262,13 +283,13 @@ class OrreryWallpaperService : WallpaperService() {
                 canvas.drawRect(0f, 0f, sw, sh, nebB)
                 drawStars(canvas, t)
                 drawOrbits(canvas)
-                drawSwarm(canvas, t)
-
+                drawSwarm(canvas)
                 val order = sim.bodies.indices.sortedBy { sim.bodies[it].y }
-                for (i in order) if (sim.bodies[i].y < 0f) drawBody(canvas, i, t)
+                for (i in order) if (sim.bodies[i].y < 0f) drawBody(canvas, i)
                 drawSun(canvas, t)
-                for (i in order) if (sim.bodies[i].y >= 0f) drawBody(canvas, i, t)
+                for (i in order) if (sim.bodies[i].y >= 0f) drawBody(canvas, i)
                 for (e in sim.events) drawEvent(canvas, e, t)
+                if (settings.facts) drawCard(canvas)
                 drawHud(canvas)
                 canvas.drawRect(0f, 0f, sw, sh, vig)
             } finally {
@@ -289,14 +310,14 @@ class OrreryWallpaperService : WallpaperService() {
 
         private fun drawOrbits(canvas: Canvas) {
             val cx = px(0f); val cy = py(0f)
-            orb.color = Color.argb(46, 120, 180, 225)
+            orb.color = Color.argb(44, 120, 180, 225)
             for (b in sim.bodies) {
                 if (b.parent >= 0) continue
                 val r = b.orbit * s
                 canvas.drawOval(RectF(cx - r, cy - r * yScale, cx + r, cy + r * yScale), orb)
             }
             if (s > 2.2f) {
-                orb.color = Color.argb(38, 140, 200, 235)
+                orb.color = Color.argb(36, 140, 200, 235)
                 for (b in sim.bodies) {
                     if (b.parent < 0) continue
                     val p = sim.bodies[b.parent]
@@ -306,10 +327,10 @@ class OrreryWallpaperService : WallpaperService() {
                 }
             }
             val cr = 800f * s
-            orb.color = Color.argb(40, 150, 200, 235)
+            orb.color = Color.argb(38, 150, 200, 235)
             canvas.drawOval(RectF(cx - cr, cy - cr * yScale, cx + cr, cy + cr * yScale), orb)
             stroke.strokeWidth = dp(1f)
-            stroke.color = Color.argb(70, 150, 205, 240)
+            stroke.color = Color.argb(65, 150, 205, 240)
             for (i in 0 until 24) {
                 val a = Math.toRadians((i * 15 - 90).toDouble())
                 val r2 = cr - dp(if (i % 6 == 0) 9f else 4f)
@@ -319,21 +340,20 @@ class OrreryWallpaperService : WallpaperService() {
             cal.timeInMillis = System.currentTimeMillis()
             val hf = cal.get(Calendar.HOUR_OF_DAY) + cal.get(Calendar.MINUTE) / 60f
             val ha = Math.toRadians((hf / 24f * 360f - 90f).toDouble())
-            dot.color = Color.argb(220, 120, 215, 255)
+            dot.color = Color.argb(215, 201, 162, 39)
             canvas.drawCircle(cx + (cr * cos(ha)).toFloat(), cy + (cr * yScale * sin(ha)).toFloat(), dp(3f), dot)
         }
 
-        private fun drawSwarm(canvas: Canvas, t: Double) {
+        private fun drawSwarm(canvas: Canvas) {
             if (sim.swarm <= 0.001f) return
-            val n = (sim.swarm * 170f).toInt()
+            val n = (sim.swarm * 150f).toInt()
             val cx = px(0f); val cy = py(0f)
             for (k in 0 until n) {
                 val a = k * 2.3999 + sim.simDays * 0.03
                 val r = (70f + (k % 5) * 6f) * s
-                val x = cx + (r * cos(a)).toFloat()
-                val y = cy + (r * yScale * sin(a)).toFloat()
                 dot.color = Color.argb(190, 235, 200, 130)
-                canvas.drawCircle(x, y, max(0.8f, dp(1.1f)), dot)
+                canvas.drawCircle(cx + (r * cos(a)).toFloat(), cy + (r * yScale * sin(a)).toFloat(),
+                    max(0.8f, dp(1.1f)), dot)
             }
         }
 
@@ -359,10 +379,27 @@ class OrreryWallpaperService : WallpaperService() {
             canvas.drawCircle(cx, cy, r, dot)
         }
 
-         private fun drawBody(canvas: Canvas, i: Int, t: Double) {
+        private fun ringArcs(canvas: Canvas, cx: Float, cy: Float, r: Float, front: Boolean) {
+            canvas.save()
+            canvas.translate(cx, cy)
+            canvas.rotate(-16f)
+            val inner = floatArrayOf(1.34f, 1.70f, 2.02f)
+            val outer = floatArrayOf(1.62f, 1.96f, 2.20f)
+            val alpha = intArrayOf(120, 165, 95)
+            for (k in 0 until 3) {
+                val rr = r * (inner[k] + outer[k]) / 2f
+                stroke.strokeWidth = max(0.8f, r * (outer[k] - inner[k]))
+                stroke.color = Color.argb(if (front) alpha[k] else alpha[k] * 3 / 5, 228, 214, 178)
+                val oval = RectF(-rr, -rr * 0.34f, rr, rr * 0.34f)
+                canvas.drawArc(oval, if (front) 0f else 180f, 180f, false, stroke)
+            }
+            canvas.restore()
+        }
+
+         private fun drawBody(canvas: Canvas, i: Int) {
             val b = sim.bodies[i]
             val cx = px(b.x); val cy = py(b.y)
-            val r = max(1.2f, b.radius * s * settings.planetSize)
+            val r = rad(b)
             if (cx + r * 4f < 0f || cx - r * 4f > sw || cy + r * 4f < 0f || cy - r * 4f > sh) return
 
             if (b.destroyed) {
@@ -378,13 +415,11 @@ class OrreryWallpaperService : WallpaperService() {
                         floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
                     canvas.drawCircle(cx, cy, r * 3f, glow)
                     glow.shader = null
-                    disc.shader = RadialGradient(cx - nr * 0.3f, cy - nr * 0.3f, max(1f, nr * 1.5f),
-                        intArrayOf(b.c1, b.c2), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
-                    canvas.drawCircle(cx, cy, nr, disc)
-                    disc.shader = null
+                    val tb = tex[i]
+                    if (tb != null) canvas.drawBitmap(tb, null, RectF(cx - nr, cy - nr, cx + nr, cy + nr), bmpPaint)
                     val rnd = Random(i * 31L + 5L)
-                    for (k in 0 until 26) {
-                        val a = rnd.nextFloat() * 6.283f + t.toFloat() * 0.6f
+                    for (k in 0 until 24) {
+                        val a = rnd.nextFloat() * 6.283f
                         val d = r * (3.2f - 2.4f * rb) * (0.5f + rnd.nextFloat())
                         dot.color = Color.argb(190, 160, 255, 220)
                         canvas.drawCircle(cx + cos(a) * d, cy + sin(a) * d * yScale, dp(1.2f), dot)
@@ -393,36 +428,42 @@ class OrreryWallpaperService : WallpaperService() {
                 return
             }
 
-            if (settings.glow > 0.05f) {
-                glow.shader = RadialGradient(cx, cy, max(1f, r * 2.6f),
-                    intArrayOf(Color.argb((70 * settings.glow).toInt(), Color.red(b.c1), Color.green(b.c1), Color.blue(b.c1)),
-                        Color.argb(0, 0, 0, 0)), floatArrayOf(0.35f, 1f), Shader.TileMode.CLAMP)
-                canvas.drawCircle(cx, cy, r * 2.6f, glow)
-                glow.shader = null
-            }
-
+            val sb = shadeBmp
+            val gb = glowBmp
+            val tb = tex[i]
             val sx = px(0f); val sy = py(0f)
             val dx = sx - cx; val dy = sy - cy
-            val d = max(1f, sqrt(dx * dx + dy * dy))
-            val lx = cx + dx / d * r * 0.42f
-            val ly = cy + dy / d * r * 0.42f
-            disc.shader = RadialGradient(lx, ly, max(1f, r * 1.7f),
-                intArrayOf(b.c1, b.c2, Color.rgb(3, 5, 10)),
-                floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP)
-            canvas.drawCircle(cx, cy, r, disc)
-            disc.shader = null
+            val dist = max(1f, sqrt(dx * dx + dy * dy))
+            val ang = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat()
+
+            if (gb != null && settings.glow > 0.05f && r > 2f) {
+                glowPaint.alpha = (settings.glow * 150f).toInt().coerceIn(0, 255)
+                glowPaint.colorFilter = tints[i]
+                val gr = r * 2.5f
+                canvas.drawBitmap(gb, null, RectF(cx - gr, cy - gr, cx + gr, cy + gr), glowPaint)
+            }
+            if (b.ring) ringArcs(canvas, cx, cy, r, false)
+            if (tb != null) canvas.drawBitmap(tb, null, RectF(cx - r, cy - r, cx + r, cy + r), bmpPaint)
+            if (sb != null) {
+                canvas.save()
+                canvas.translate(cx, cy)
+                canvas.rotate(ang)
+                canvas.drawBitmap(sb, null, RectF(-r, -r, r, r), bmpPaint)
+                canvas.restore()
+            }
+            if (b.ring) ringArcs(canvas, cx, cy, r, true)
 
             if (b.pop > 1e3 && b.stage >= 4 && r > 5f) {
-                val n = min(48, max(4, ((log10(b.pop) - 3.0) * 7.0).toInt()))
+                val n = min(40, max(4, ((log10(b.pop) - 3.0) * 6.0).toInt()))
                 val rnd = Random(i * 7919L)
-                val alpha = if (b.ruined) 60 else 210
+                val alpha = if (b.ruined) 55 else 215
                 for (k in 0 until n) {
                     val a = rnd.nextFloat() * 6.283f
-                    val rr = sqrt(rnd.nextFloat()) * r * 0.93f
+                    val rr = sqrt(rnd.nextFloat()) * r * 0.9f
                     val ox = cos(a) * rr; val oy = sin(a) * rr
                     if (ox * dx + oy * dy < 0f) {
                         dot.color = Color.argb(alpha, 255, 196, 110)
-                        canvas.drawCircle(cx + ox, cy + oy, max(0.6f, r * 0.035f), dot)
+                        canvas.drawCircle(cx + ox, cy + oy, max(0.6f, r * 0.03f), dot)
                     }
                 }
             }
@@ -436,44 +477,122 @@ class OrreryWallpaperService : WallpaperService() {
                 }
             }
             if (b.scars > 0.02f) {
-                dot.color = Color.argb((110 * b.scars).toInt(), 60, 20, 12)
-                canvas.drawCircle(cx + r * 0.2f, cy + r * 0.15f, r * 0.75f, dot)
-            }
-            if (b.ring) {
-                canvas.save()
-                canvas.translate(cx, cy)
-                canvas.rotate(-16f)
-                stroke.strokeWidth = max(1f, r * 0.1f)
-                stroke.color = Color.argb(130, 226, 212, 176)
-                canvas.drawOval(-r * 2f, -r * 0.45f, r * 2f, r * 0.45f, stroke)
-                canvas.restore()
+                dot.color = Color.argb((90 * b.scars).toInt(), 60, 20, 12)
+                canvas.drawCircle(cx + r * 0.2f, cy + r * 0.15f, r * 0.72f, dot)
             }
             if (b.ringBuilt) {
                 stroke.strokeWidth = max(0.8f, dp(1f))
                 stroke.color = Color.argb(170, 130, 235, 255)
-                val rr = r * 1.55f
-                canvas.drawOval(RectF(cx - rr, cy - rr * 0.35f, cx + rr, cy + rr * 0.35f), stroke)
+                val rr = r * 1.5f
+                canvas.drawOval(RectF(cx - rr, cy - rr * 0.34f, cx + rr, cy + rr * 0.34f), stroke)
             }
             if (b.elevator) {
                 stroke.strokeWidth = max(0.6f, dp(0.7f))
                 stroke.color = Color.argb(150, 150, 245, 255)
-                canvas.drawLine(cx, cy - r, cx, cy - r * 2.4f, stroke)
+                canvas.drawLine(cx, cy - r, cx, cy - r * 2.3f, stroke)
                 dot.color = Color.argb(200, 180, 250, 255)
-                canvas.drawCircle(cx, cy - r * 2.4f, max(1f, dp(1.6f)), dot)
+                canvas.drawCircle(cx, cy - r * 2.3f, max(1f, dp(1.6f)), dot)
             }
             if (b.colonyOf >= 0) {
-                dot.color = Color.argb(200, 120, 230, 255)
-                canvas.drawCircle(cx + r * 1.35f, cy - r * 0.9f, max(1f, dp(1.8f)), dot)
+                dot.color = Color.argb(200, 201, 162, 39)
+                canvas.drawCircle(cx + r * 1.3f, cy - r * 0.85f, max(1f, dp(1.8f)), dot)
             }
             if (b.flash > 0.01f) {
-                dot.color = Color.argb((170 * b.flash).toInt(),
+                dot.color = Color.argb((160 * b.flash).toInt(),
                     Color.red(b.flashColor), Color.green(b.flashColor), Color.blue(b.flashColor))
-                canvas.drawCircle(cx, cy, r * (1f + b.flash * 0.6f), dot)
+                canvas.drawCircle(cx, cy, r * (1f + b.flash * 0.5f), dot)
             }
             if (settings.labels && r > 3f) {
                 small.color = Color.argb(150, 175, 210, 240)
                 canvas.drawText(b.name, cx + r + dp(5f), cy - dp(3f), small)
             }
+        }
+
+        private fun wrap(text: String, paint: Paint, maxW: Float): List<String> {
+            val out = ArrayList<String>()
+            var line = StringBuilder()
+            for (w in text.split(" ")) {
+                val probe = if (line.isEmpty()) w else line.toString() + " " + w
+                if (paint.measureText(probe) > maxW && line.isNotEmpty()) {
+                    out.add(line.toString())
+                    line = StringBuilder(w)
+                } else {
+                    if (line.isNotEmpty()) line.append(" ")
+                    line.append(w)
+                }
+            }
+            if (line.isNotEmpty()) out.add(line.toString())
+            return out
+        }
+
+        private fun drawCard(canvas: Canvas) {
+            val idx = sim.cardBody
+            if (idx < 0 || idx >= sim.bodies.size) return
+            val b = sim.bodies[idx]
+            if (b.destroyed) return
+            val fade = min(1f, min(sim.cardAge / 0.7f, (sim.cardDur - sim.cardAge) / 0.9f)).coerceIn(0f, 1f)
+            if (fade <= 0.01f) return
+            val a = (fade * 255f).toInt().coerceIn(0, 255)
+
+            val cw = min(dp(214f), sw - dp(28f))
+            val pad = dp(11f)
+            val lines = wrap(sim.cardText, body, cw - pad * 2f)
+            val lh = dp(15f)
+            val ch = pad * 2f + dp(13f) + lines.size * lh + dp(12f)
+            val bx = px(b.x); val by = py(b.y)
+            val r = rad(b)
+            val right = bx < sw * 0.52f
+            var x = if (right) bx + r + dp(26f) else bx - r - dp(26f) - cw
+            x = x.coerceIn(dp(12f), max(dp(12f), sw - cw - dp(12f)))
+            var y = by - ch / 2f
+            y = y.coerceIn(dp(58f), max(dp(58f), sh - ch - dp(76f)))
+
+            val anchorX = if (right) x else x + cw
+            val anchorY = y + ch / 2f
+            stroke.strokeWidth = dp(0.8f)
+            stroke.color = Color.argb((a * 0.55f).toInt(), 201, 162, 39)
+            canvas.drawLine(bx + (if (right) r * 0.75f else -r * 0.75f), by, anchorX, anchorY, stroke)
+            dot.color = Color.argb((a * 0.8f).toInt(), 201, 162, 39)
+            canvas.drawCircle(anchorX, anchorY, dp(1.8f), dot)
+
+            val rect = RectF(x, y, x + cw, y + ch)
+            cardFill.color = Color.argb((a * 0.82f).toInt(), 7, 10, 17)
+            canvas.drawRoundRect(rect, dp(5f), dp(5f), cardFill)
+            cardEdge.color = Color.argb(a, 201, 162, 39)
+            canvas.drawRoundRect(rect, dp(5f), dp(5f), cardEdge)
+            stroke.color = Color.argb((a * 0.35f).toInt(), 228, 199, 124)
+            stroke.strokeWidth = dp(0.6f)
+            canvas.drawLine(x + pad, y + pad + dp(11f), x + cw - pad, y + pad + dp(11f), stroke)
+
+            title.color = Color.argb(a, 228, 199, 124)
+            canvas.drawText(sim.cardTitle, x + pad, y + pad + dp(7f), title)
+            body.color = Color.argb(a, 236, 240, 246)
+            var ty = y + pad + dp(13f) + dp(11f)
+            for (l in lines) {
+                canvas.drawText(l, x + pad, ty, body)
+                ty += lh
+            }
+            tag.color = Color.argb((a * 0.75f).toInt(), 150, 175, 200)
+            canvas.drawText(sim.cardTag, x + pad, y + ch - pad + dp(2f), tag)
+            if (b.pop > 1e3) {
+                tag.color = Color.argb((a * 0.75f).toInt(), 201, 162, 39)
+                val ps = sim.popText(b.pop)
+                tag.textAlign = Paint.Align.RIGHT
+                canvas.drawText(ps, x + cw - pad, y + ch - pad + dp(2f), tag)
+                tag.textAlign = Paint.Align.LEFT
+            }
+        }
+
+        private fun drawHud(canvas: Canvas) {
+            cal.timeInMillis = System.currentTimeMillis()
+            small.color = Color.argb(150, 150, 190, 225)
+            val left = if (settings.date) String.format(Locale.US, "%02d.%02d  %02d:%02d",
+                cal.get(Calendar.DAY_OF_MONTH), cal.get(Calendar.MONTH) + 1,
+                cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE)) + "   " else ""
+            var line = left + "K " + String.format(Locale.US, "%.2f", sim.kIndex)
+            if (sim.colonies > 0) line += "  ·  КОЛОНИЙ " + sim.colonies
+            if (sim.swarm > 0.01f) line += "  ·  РОЙ " + (sim.swarm * 100).toInt() + "%"
+            canvas.drawText(line, dp(16f), dp(48f), small)
         }
 
         private fun drawEvent(canvas: Canvas, e: SimEvent, t: Double) {
@@ -518,25 +637,24 @@ class OrreryWallpaperService : WallpaperService() {
                     path.moveTo(ax, ay)
                     path.quadTo(qx, qy, bx, by)
                     stroke.strokeWidth = dp(1.2f)
-                    stroke.color = Color.argb((a * 0.7f).toInt(), 130, 225, 255)
+                    stroke.color = Color.argb((a * 0.7f).toInt(), 201, 162, 39)
                     stroke.pathEffect = DashPathEffect(floatArrayOf(dp(6f), dp(8f)), -e.t * dp(22f))
                     canvas.drawPath(path, stroke)
                     stroke.pathEffect = null
-                    val u = p
-                    val iu = 1f - u
+                    val u = p; val iu = 1f - u
                     val rx = iu * iu * ax + 2 * iu * u * qx + u * u * bx
                     val ry = iu * iu * ay + 2 * iu * u * qy + u * u * by
                     val tx = 2 * iu * (qx - ax) + 2 * u * (bx - qx)
                     val ty = 2 * iu * (qy - ay) + 2 * u * (by - qy)
                     canvas.save()
                     canvas.translate(rx, ry)
-                    canvas.rotate(Math.toDegrees(kotlin.math.atan2(ty.toDouble(), tx.toDouble())).toFloat())
+                    canvas.rotate(Math.toDegrees(atan2(ty.toDouble(), tx.toDouble())).toFloat())
                     path.rewind()
                     path.moveTo(dp(6f), 0f)
                     path.lineTo(-dp(4f), -dp(2.6f))
                     path.lineTo(-dp(4f), dp(2.6f))
                     path.close()
-                    dot.color = Color.argb(255, 225, 245, 255)
+                    dot.color = Color.argb(255, 235, 245, 255)
                     canvas.drawPath(path, dot)
                     dot.color = Color.argb((180 * fade).toInt(), 255, 170, 90)
                     canvas.drawCircle(-dp(5f), 0f, dp(2f), dot)
@@ -545,7 +663,7 @@ class OrreryWallpaperService : WallpaperService() {
                 3 -> {
                     val b = sim.bodies[e.a]
                     val bx = px(b.x); val by = py(b.y)
-                    val r = max(2f, b.radius * s * settings.planetSize)
+                    val r = max(2f, rad(b))
                     val hx = bx; val hy = by - r * 2.4f
                     val startX = bx + sw * 0.6f; val startY = by - sh * 0.4f
                     val ux: Float; val uy: Float
@@ -559,7 +677,6 @@ class OrreryWallpaperService : WallpaperService() {
                         ux = hx + (startX - hx) * k; uy = hy + (startY - hy) * k
                     }
                     if (p > 0.33f && p < 0.72f) {
-                        val ba = (110 * fade).toInt()
                         path.rewind()
                         path.moveTo(ux - r * 0.35f, uy)
                         path.lineTo(ux + r * 0.35f, uy)
@@ -567,7 +684,7 @@ class OrreryWallpaperService : WallpaperService() {
                         path.lineTo(bx - r * 0.8f, by)
                         path.close()
                         disc.shader = LinearGradient(ux, uy, bx, by,
-                            intArrayOf(Color.argb(ba, 150, 255, 210), Color.argb(0, 120, 255, 200)),
+                            intArrayOf(Color.argb((110 * fade).toInt(), 150, 255, 210), Color.argb(0, 120, 255, 200)),
                             floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
                         canvas.drawPath(path, disc)
                         disc.shader = null
@@ -593,9 +710,8 @@ class OrreryWallpaperService : WallpaperService() {
                     canvas.drawLine(sx, sy, bx, by, stroke)
                     stroke.pathEffect = null
                     val k = (p * 1.2f).coerceIn(0f, 1f)
-                    val ax = sx + (bx - sx) * k; val ay = sy + (by - sy) * k
                     dot.color = Color.argb(255, 180, 255, 230)
-                    canvas.drawCircle(ax, ay, dp(3f), dot)
+                    canvas.drawCircle(sx + (bx - sx) * k, sy + (by - sy) * k, dp(3f), dot)
                 }
                 4 -> {
                     val b = sim.bodies[e.a]
@@ -614,10 +730,9 @@ class OrreryWallpaperService : WallpaperService() {
                     val bx = px(b.x); val by = py(b.y)
                     if (p < 0.55f) {
                         val k = 1f - p / 0.55f
-                        val ax = bx + dp(420f) * k; val ay = by - dp(300f) * k
                         stroke.strokeWidth = dp(2.4f)
                         stroke.color = Color.argb(a, 255, 190, 120)
-                        canvas.drawLine(ax, ay, bx, by, stroke)
+                        canvas.drawLine(bx + dp(420f) * k, by - dp(300f) * k, bx, by, stroke)
                     } else {
                         val k = smooth(((p - 0.55f) / 0.45f).coerceIn(0f, 1f))
                         stroke.strokeWidth = dp(2f)
@@ -684,7 +799,7 @@ class OrreryWallpaperService : WallpaperService() {
                 }
                 10 -> {
                     stroke.strokeWidth = dp(1.4f)
-                    stroke.color = Color.argb((150 * fade).toInt(), 255, 220, 140)
+                    stroke.color = Color.argb((150 * fade).toInt(), 201, 162, 39)
                     path.rewind()
                     var first = true
                     for (b in sim.bodies) {
@@ -697,7 +812,7 @@ class OrreryWallpaperService : WallpaperService() {
                 11 -> {
                     val b = sim.bodies[2]
                     val bx = px(b.x); val by = py(b.y)
-                    val r = max(3f, b.radius * s * settings.planetSize)
+                    val r = max(3f, rad(b))
                     for (k in 0 until 3) {
                         val rr = r * (1.5f + k * 0.4f)
                         stroke.strokeWidth = dp(1.5f)
@@ -706,7 +821,7 @@ class OrreryWallpaperService : WallpaperService() {
                     }
                 }
                 12 -> {
-                    val cx = sw * 0.5f; val cy = sh * 0.35f
+                    val cx = sw * 0.5f; val cy = sh * 0.32f
                     val r = dp(30f) + smooth(p) * dp(55f)
                     for (k in 0 until 6) {
                         val rr = r * (1f - k * 0.13f)
@@ -733,7 +848,7 @@ class OrreryWallpaperService : WallpaperService() {
                     }
                 }
                 14 -> {
-                    val bx = sw * (p * 1.4f - 0.2f); val by = sh * 0.22f
+                    val bx = sw * (p * 1.4f - 0.2f); val by = sh * 0.2f
                     val rr = dp(10f)
                     glow.shader = RadialGradient(bx, by, rr * 6f,
                         intArrayOf(Color.argb((200 * fade).toInt(), 255, 215, 145), Color.argb(0, 255, 140, 60)),
@@ -746,11 +861,11 @@ class OrreryWallpaperService : WallpaperService() {
                 16 -> {
                     val b = sim.bodies[10]
                     val bx = px(b.x); val by = py(b.y)
-                    val r = max(3f, b.radius * s * settings.planetSize)
+                    val r = max(3f, rad(b))
                     for (k in 0 until 3) {
                         val rr = r * (2.1f + k * 0.4f) + smooth(p) * dp(8f)
                         stroke.strokeWidth = dp(1.1f)
-                        stroke.color = Color.argb((140 * fade * (1f - k * 0.25f)).toInt(), 205, 235, 255)
+                        stroke.color = Color.argb((140 * fade * (1f - k * 0.25f)).toInt(), 228, 199, 124)
                         canvas.save()
                         canvas.translate(bx, by)
                         canvas.rotate(-16f + k * 7f * smooth(p))
@@ -760,44 +875,5 @@ class OrreryWallpaperService : WallpaperService() {
                 }
             }
         }
-
-        private fun drawHud(canvas: Canvas) {
-            small.color = Color.argb(170, 130, 200, 240)
-            canvas.drawText("K " + String.format(Locale.US, "%.2f", sim.kIndex) +
-                "  ·  КОЛОНИЙ " + sim.colonies + "  ·  РОЙ " + (sim.swarm * 100).toInt() + "%",
-                dp(16f), dp(28f), small)
-            val ci = sim.callout
-            if (ci >= 0 && ci < sim.bodies.size) {
-                val b = sim.bodies[ci]
-                val cx = px(b.x); val cy = py(b.y)
-                val r = max(2f, b.radius * s * settings.planetSize)
-                val lx = cx + r + dp(14f); val ly = cy - r - dp(14f)
-                stroke.strokeWidth = dp(0.9f)
-                stroke.color = Color.argb(140, 140, 215, 245)
-                canvas.drawLine(cx + r * 0.7f, cy - r * 0.7f, lx, ly, stroke)
-                canvas.drawLine(lx, ly, lx + dp(70f), ly, stroke)
-                val p = b.pop
-                val ps = when {
-                    p >= 1e12 -> String.format(Locale.US, "%.1f трлн", p / 1e12)
-                    p >= 1e9 -> String.format(Locale.US, "%.1f млрд", p / 1e9)
-                    p >= 1e6 -> String.format(Locale.US, "%.1f млн", p / 1e6)
-                    else -> String.format(Locale.US, "%.0f тыс", p / 1e3)
-                }
-                small.color = Color.argb(220, 200, 235, 255)
-                canvas.drawText(b.name + " · " + ps, lx + dp(4f), ly - dp(5f), small)
-                small.color = Color.argb(150, 130, 195, 230)
-                canvas.drawText(sim.stageName(b.stage), lx + dp(4f), ly + dp(11f), small)
-            }
-            if (!settings.date) return
-            cal.timeInMillis = System.currentTimeMillis()
-            val date = String.format(Locale.US, "%02d.%02d.%04d  ·  %02d:%02d",
-                cal.get(Calendar.DAY_OF_MONTH), cal.get(Calendar.MONTH) + 1, cal.get(Calendar.YEAR),
-                cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE))
-            val showFact = settings.facts && sim.fact.isNotEmpty() && (System.currentTimeMillis() / 12000L) % 2L == 1L
-            txt.textAlign = Paint.Align.CENTER
-            txt.color = if (showFact) Color.argb(175, 165, 215, 245) else Color.argb(190, 210, 230, 245)
-            canvas.drawText(if (showFact) sim.fact else date, sw / 2f, sh - dp(22f), txt)
-            txt.textAlign = Paint.Align.LEFT
-        }
     }
-}
+} 
