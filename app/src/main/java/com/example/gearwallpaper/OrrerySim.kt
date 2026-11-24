@@ -1,6 +1,7 @@
 package com.example.gearwallpaper
 
 import android.graphics.Color
+import java.util.Locale
 import java.util.Random
 import kotlin.math.cos
 import kotlin.math.log10
@@ -59,13 +60,11 @@ class OrrerySim {
     val bodies = ArrayList<SimBody>()
     val events = ArrayList<SimEvent>()
     var simDays = 0.0
+    var moonSpeed = 0.1f
     var swarm = 0f
     var kIndex = 0f
     var totalPop = 0.0
     var colonies = 0
-    var fact = ""
-    var factIsSim = false
-    var callout = -1
     var nextEvent = 30f
     var pendingRandom = false
     var pendingCat = false
@@ -74,25 +73,20 @@ class OrrerySim {
     var eventRate = 1f
     var eventsOn = true
     var catOn = true
-    private var factTimer = 6f
-    private var calloutTimer = 12f
+
+    var cardBody = -1
+    var cardTitle = ""
+    var cardText = ""
+    var cardTag = ""
+    var cardAge = 0f
+    val cardDur = 11f
+    private var cardGap = 35f
+    private var pendBody = -1
+    private var pendText = ""
+    private var pendTag = ""
+
     private val rng = Random(20261124L)
     private val caps = doubleArrayOf(0.0, 1e3, 1e5, 1e7, 1e10, 1e11, 1e12, 1e13)
-
-    private val realFacts = arrayOf(
-        "Свет Солнца идёт до Земли 8 мин 20 с",
-        "Земля движется по орбите со скоростью 29.8 км/с",
-        "Юпитер тяжелее всех остальных планет вместе взятых",
-        "Подлёдный океан Энцелада питает гейзеры на южном полюсе",
-        "Ганимед — единственная луна с собственным магнитным полем",
-        "Титан — единственная луна с плотной атмосферой",
-        "Ионный хвост кометы всегда направлен от Солнца",
-        "У перигелия комета ускоряется по второму закону Кеплера",
-        "Оборот Ио вокруг Юпитера занимает 1.77 суток",
-        "Средняя плотность Сатурна меньше плотности воды",
-        "На Ио действуют приливы Юпитера — вулканы выбрасывают серу",
-        "Сутки на Венере длиннее её года"
-    )
 
     init {
         add("Меркурий", -1, 130f, 87.969, 252.25, 5f, Color.rgb(168, 164, 158), Color.rgb(70, 68, 64), false, false)
@@ -101,32 +95,87 @@ class OrrerySim {
         add("Луна", 2, 30f, 27.321, 40.0, 3f, Color.rgb(198, 198, 196), Color.rgb(74, 74, 72), false, false)
         add("Марс", -1, 360f, 686.980, 355.45, 6.5f, Color.rgb(214, 112, 70), Color.rgb(88, 36, 20), false, false)
         add("Юпитер", -1, 520f, 4332.59, 34.40, 24f, Color.rgb(226, 190, 142), Color.rgb(96, 66, 40), false, false)
-        add("Ио", 5, 42f, 1.769, 10.0, 3.2f, Color.rgb(238, 214, 120), Color.rgb(110, 82, 26), false, false)
-        add("Европа", 5, 56f, 3.551, 120.0, 3.0f, Color.rgb(216, 228, 236), Color.rgb(80, 100, 120), false, true)
-        add("Ганимед", 5, 72f, 7.155, 230.0, 4.2f, Color.rgb(186, 176, 164), Color.rgb(70, 64, 58), false, true)
-        add("Каллисто", 5, 90f, 16.689, 300.0, 4.0f, Color.rgb(150, 140, 132), Color.rgb(54, 48, 44), false, true)
+        add("Ио", 5, 44f, 1.769, 10.0, 3.2f, Color.rgb(238, 214, 120), Color.rgb(110, 82, 26), false, false)
+        add("Европа", 5, 58f, 3.551, 120.0, 3.0f, Color.rgb(216, 228, 236), Color.rgb(80, 100, 120), false, true)
+        add("Ганимед", 5, 74f, 7.155, 230.0, 4.2f, Color.rgb(186, 176, 164), Color.rgb(70, 64, 58), false, true)
+        add("Каллисто", 5, 92f, 16.689, 300.0, 4.0f, Color.rgb(150, 140, 132), Color.rgb(54, 48, 44), false, true)
         add("Сатурн", -1, 700f, 10759.22, 49.94, 20f, Color.rgb(232, 210, 158), Color.rgb(104, 84, 46), true, false)
-        add("Титан", 10, 62f, 15.945, 80.0, 4.0f, Color.rgb(226, 168, 84), Color.rgb(96, 60, 20), false, true)
-        add("Энцелад", 10, 36f, 1.370, 200.0, 2.4f, Color.rgb(238, 246, 252), Color.rgb(110, 130, 148), false, true)
+        add("Титан", 10, 66f, 15.945, 80.0, 4.0f, Color.rgb(226, 168, 84), Color.rgb(96, 60, 20), false, true)
+        add("Энцелад", 10, 38f, 1.370, 200.0, 2.4f, Color.rgb(238, 246, 252), Color.rgb(110, 130, 148), false, true)
         bodies[2].stage = 4
         bodies[2].pop = 8.1e9
         bodies[2].aggression = 0.7f
-        fact = realFacts[0]
     }
 
     private fun add(n: String, p: Int, o: Float, per: Double, l: Double, r: Float, a: Int, b: Int, ring: Boolean, icy: Boolean) {
         bodies.add(SimBody(n, p, o, per, l, r, a, b, ring, icy))
     }
 
-    fun bodyIndex(name: String): Int {
-        for (i in bodies.indices) if (bodies[i].name == name) return i
-        return -1
+    fun stageName(s: Int) = when (s) {
+        0 -> "стерильный мир"; 1 -> "микробная жизнь"; 2 -> "сложная жизнь"
+        3 -> "разумная жизнь"; 4 -> "индустриальная эпоха"; 5 -> "выход в космос"
+        6 -> "межпланетная цивилизация"; else -> "мегаструктуры · K II"
+    }
+
+    fun popText(p: Double): String = when {
+        p >= 1e12 -> String.format(Locale.US, "%.1f трлн", p / 1e12)
+        p >= 1e9 -> String.format(Locale.US, "%.1f млрд", p / 1e9)
+        p >= 1e6 -> String.format(Locale.US, "%.1f млн", p / 1e6)
+        p >= 1e3 -> String.format(Locale.US, "%.0f тыс", p / 1e3)
+        else -> String.format(Locale.US, "%.0f", p)
+    }
+
+    private fun bodyFact(i: Int): String = when (bodies[i].name) {
+        "Меркурий" -> "Год длится 88 суток, а солнечные сутки — 176 земных"
+        "Венера" -> "Сутки длиннее года: 243 против 225 земных суток"
+        "Земля" -> "Свет Солнца идёт до нас 8 минут 20 секунд"
+        "Луна" -> "Удаляется от Земли примерно на 3.8 см каждый год"
+        "Марс" -> "Гора Олимп выше Эвереста примерно в 2.5 раза"
+        "Юпитер" -> "Тяжелее всех остальных планет вместе взятых"
+        "Ио" -> "Самое вулканическое тело Солнечной системы"
+        "Европа" -> "Подлёдный океан содержит больше воды, чем все океаны Земли"
+        "Ганимед" -> "Крупнее Меркурия и имеет собственное магнитное поле"
+        "Каллисто" -> "Древнейшая поверхность: кратеры не стирались 4 млрд лет"
+        "Сатурн" -> "Средняя плотность меньше плотности воды"
+        "Титан" -> "Единственная луна с плотной атмосферой и метановыми реками"
+        else -> "Гейзеры выбрасывают водяной лёд на сотни километров"
+    }
+
+    private fun announce(i: Int, text: String, tag: String) {
+        pendBody = i
+        pendText = text
+        pendTag = tag
+    }
+
+    private fun openCard() {
+        val live = ArrayList<Int>()
+        for (i in bodies.indices) if (!bodies[i].destroyed) live.add(i)
+        if (live.isEmpty()) { cardGap = 30f; return }
+        val weighted = ArrayList<Int>()
+        for (i in live) {
+            weighted.add(i)
+            if (bodies[i].pop > 1e3) { weighted.add(i); weighted.add(i) }
+        }
+        val i = weighted[rng.nextInt(weighted.size)]
+        val b = bodies[i]
+        cardBody = i
+        cardTitle = b.name.uppercase()
+        cardAge = 0f
+        if (b.pop > 1e3 && rng.nextFloat() < 0.55f) {
+            cardText = "Население " + popText(b.pop) + " · " + stageName(b.stage)
+            cardTag = "СИМУЛЯЦИЯ"
+        } else {
+            cardText = bodyFact(i)
+            cardTag = "НАУКА"
+        }
     }
 
     fun update(dt: Float, astroSpeed: Float) {
         simDays += (dt * astroSpeed).toDouble()
+        val ms = max(0.02f, moonSpeed).toDouble()
         for (b in bodies) {
-            val ang = Math.toRadians((b.l0 + 360.0 * simDays / b.period) % 360.0)
+            val per = if (b.parent >= 0) b.period / ms else b.period
+            val ang = Math.toRadians((b.l0 + 360.0 * simDays / per) % 360.0)
             val ox = if (b.parent >= 0) bodies[b.parent].x else 0f
             val oy = if (b.parent >= 0) bodies[b.parent].y else 0f
             b.x = ox + (b.orbit * cos(ang)).toFloat()
@@ -153,9 +202,7 @@ class OrrerySim {
                     if (b.stage == 7) b.elevator = true
                     b.flash = 1f
                     b.flashColor = Color.rgb(120, 240, 180)
-                    fact = "SIM · " + b.name + ": " + stageName(b.stage)
-                    factIsSim = true
-                    factTimer = 14f
+                    announce(i, "Новая эпоха: " + stageName(b.stage), "СИМУЛЯЦИЯ")
                 }
                 if (b.stage in 4..5 && rng.nextFloat() < dt * 0.0009f * b.aggression * civSpeed) war(i)
                 if (b.stage >= 5) {
@@ -177,70 +224,32 @@ class OrrerySim {
             val e = events[i]
             e.t += dt
             step(e, dt)
-            if (e.t >= e.dur) {
-                finish(e)
-                events.removeAt(i)
-            }
+            if (e.t >= e.dur) { finish(e); events.removeAt(i) }
             i--
         }
 
         if (eventsOn) {
             nextEvent -= dt * eventRate
-            if (nextEvent <= 0f) {
-                nextEvent = 80f + rng.nextFloat() * 140f
-                spawn(false)
-            }
+            if (nextEvent <= 0f) { nextEvent = 80f + rng.nextFloat() * 140f; spawn(false) }
         }
         if (pendingRandom) { pendingRandom = false; spawn(false) }
         if (pendingCat) { pendingCat = false; spawn(true) }
         if (pendingRestore) { pendingRestore = false; restoreAll() }
 
-        factTimer -= dt
-        if (factTimer <= 0f) {
-            factTimer = 15f
-            factIsSim = !factIsSim
-            fact = if (factIsSim) simStat() else realFacts[rng.nextInt(realFacts.size)]
+        if (cardBody >= 0) {
+            cardAge += dt
+            if (cardAge >= cardDur) { cardBody = -1; cardGap = 80f + rng.nextFloat() * 75f }
+        } else if (pendBody >= 0) {
+            cardBody = pendBody
+            cardTitle = bodies[pendBody].name.uppercase()
+            cardText = pendText
+            cardTag = pendTag
+            cardAge = 0f
+            pendBody = -1
+        } else {
+            cardGap -= dt
+            if (cardGap <= 0f) openCard()
         }
-        calloutTimer -= dt
-        if (calloutTimer <= 0f) {
-            if (callout >= 0) {
-                callout = -1
-                calloutTimer = 45f + rng.nextFloat() * 50f
-            } else {
-                val c = inhabited()
-                if (c >= 0) { callout = c; calloutTimer = 8f } else calloutTimer = 25f
-            }
-        }
-    }
-
-    fun stageName(s: Int) = when (s) {
-        0 -> "стерильный мир"; 1 -> "микробная жизнь"; 2 -> "сложная жизнь"
-        3 -> "разумная жизнь"; 4 -> "индустриальная эпоха"; 5 -> "выход в космос"
-        6 -> "межпланетная цивилизация"; else -> "мегаструктуры · K II"
-    }
-
-    private fun simStat(): String {
-        val p = totalPop
-        val ps = when {
-            p >= 1e12 -> String.format("%.1f трлн", p / 1e12)
-            p >= 1e9 -> String.format("%.1f млрд", p / 1e9)
-            p >= 1e6 -> String.format("%.1f млн", p / 1e6)
-            p >= 1e3 -> String.format("%.0f тыс", p / 1e3)
-            else -> String.format("%.0f", p)
-        }
-        return when (rng.nextInt(4)) {
-            0 -> "SIM · население системы " + ps
-            1 -> "SIM · индекс Кардашёва K " + String.format("%.2f", kIndex)
-            2 -> "SIM · колоний " + colonies + " · рой Дайсона " + (swarm * 100).toInt() + "%"
-            else -> "SIM · живых миров " + bodies.count { it.pop > 0.0 }
-        }
-    }
-
-    private fun inhabited(): Int {
-        val list = ArrayList<Int>()
-        for (i in bodies.indices) if (bodies[i].pop > 1e3 && !bodies[i].destroyed) list.add(i)
-        if (list.isEmpty()) return -1
-        return list[rng.nextInt(list.size)]
     }
 
     private fun war(i: Int) {
@@ -252,9 +261,7 @@ class OrrerySim {
         b.flash = 1f
         b.flashColor = Color.rgb(255, 90, 60)
         if (rng.nextFloat() < 0.25f) { b.pop = 0.0; b.stage = 0 }
-        fact = "SIM · " + b.name + ": коллапс цивилизации"
-        factIsSim = true
-        factTimer = 14f
+        announce(i, "Коллапс цивилизации · уцелело " + popText(b.pop), "СИМУЛЯЦИЯ")
     }
 
     private fun tryColonize(from: Int) {
@@ -265,11 +272,10 @@ class OrrerySim {
             if (b.name == "Марс" || b.name == "Луна" || b.icy) list.add(i)
         }
         if (list.isEmpty()) return
-        val to = list[rng.nextInt(list.size)]
         val e = SimEvent()
         e.type = 2
         e.a = from
-        e.b = to
+        e.b = list[rng.nextInt(list.size)]
         e.dur = 16f
         e.seed = rng.nextLong()
         events.add(e)
@@ -296,9 +302,7 @@ class OrrerySim {
         e.dur = 70f
         e.seed = rng.nextLong()
         events.add(e)
-        fact = "SIM · протокол «Генезис»: сборка " + bodies[i].name
-        factIsSim = true
-        factTimer = 14f
+        announce(i, "Протокол «Генезис»: сборка мира из остатков", "СИМУЛЯЦИЯ")
     }
 
     fun spawn(catastrophe: Boolean) {
@@ -371,9 +375,7 @@ class OrrerySim {
                     t.ruined = false
                     t.flash = 1f
                     t.flashColor = Color.rgb(140, 230, 255)
-                    fact = "SIM · колония основана: " + t.name
-                    factIsSim = true
-                    factTimer = 14f
+                    announce(e.b, "Колония основана · выход в космос", "СИМУЛЯЦИЯ")
                 }
             }
             3 -> {
@@ -383,8 +385,7 @@ class OrrerySim {
                     2 -> if (b.stage == 0 && !b.destroyed) {
                         b.stage = 1; b.pop = 1e3; b.flash = 1f
                         b.flashColor = Color.rgb(120, 255, 190)
-                        fact = "SIM · засеян мир: " + b.name
-                        factIsSim = true; factTimer = 14f
+                        announce(e.a, "Жизнь засеяна извне · микробная эпоха", "СИМУЛЯЦИЯ")
                     }
                 }
             }
@@ -398,9 +399,7 @@ class OrrerySim {
                 b.pop = 1e3
                 b.flash = 1f
                 b.flashColor = Color.rgb(150, 255, 210)
-                fact = "SIM · мир восстановлен: " + b.name
-                factIsSim = true
-                factTimer = 14f
+                announce(e.a, "Мир восстановлен и снова заселён", "СИМУЛЯЦИЯ")
             }
         }
     }
