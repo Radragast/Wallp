@@ -23,9 +23,16 @@ object OrreryPrefs {
     const val CIV_SPEED = "civ_speed"
     const val CAMERA = "camera_drift"
     const val FACTS = "facts"
+    const val SENSOR_TILT = "sensor_tilt"
+    const val TILT_STRENGTH = "tilt_strength"
+    const val CHARGE_REACTION = "charge_reaction"
+    const val OFFLINE_PROGRESS = "offline_progress"
+    const val OFFLINE_CAP = "offline_cap"
+    const val SIM_STATE = "sim_state_v1"
     const val FORCE_RANDOM = "force_random"
     const val FORCE_CAT = "force_cat"
     const val FORCE_RESTORE = "force_restore"
+    const val FORCE_RESET = "force_reset"
 
     data class Settings(
         val speed: Float = 1f,
@@ -45,7 +52,12 @@ object OrreryPrefs {
         val planetSize: Float = 1.4f,
         val civSpeed: Float = 1f,
         val camera: Boolean = true,
-        val facts: Boolean = true
+        val facts: Boolean = true,
+        val sensorTilt: Boolean = true,
+        val tiltStrength: Float = 1f,
+        val chargeReaction: Boolean = true,
+        val offlineProgress: Boolean = true,
+        val offlineCap: Float = 8f
     )
 
     fun read(p: SharedPreferences) = Settings(
@@ -55,7 +67,10 @@ object OrreryPrefs {
         p.getBoolean(EVENTS, true), p.getFloat(RATE, 1f), p.getBoolean(CATASTROPHES, true),
         p.getBoolean(MULTI_SCREEN, true), p.getFloat(SYSTEM_SCALE, 1f),
         p.getFloat(PLANET_SIZE, 1.4f), p.getFloat(CIV_SPEED, 1f),
-        p.getBoolean(CAMERA, true), p.getBoolean(FACTS, true)
+        p.getBoolean(CAMERA, true), p.getBoolean(FACTS, true),
+        p.getBoolean(SENSOR_TILT, true), p.getFloat(TILT_STRENGTH, 1f),
+        p.getBoolean(CHARGE_REACTION, true),
+        p.getBoolean(OFFLINE_PROGRESS, true), p.getFloat(OFFLINE_CAP, 8f)
     )
 
     fun write(p: SharedPreferences, s: Settings) {
@@ -69,6 +84,9 @@ object OrreryPrefs {
             .putFloat(SYSTEM_SCALE, s.systemScale).putFloat(PLANET_SIZE, s.planetSize)
             .putFloat(CIV_SPEED, s.civSpeed).putBoolean(CAMERA, s.camera)
             .putBoolean(FACTS, s.facts)
+            .putBoolean(SENSOR_TILT, s.sensorTilt).putFloat(TILT_STRENGTH, s.tiltStrength)
+            .putBoolean(CHARGE_REACTION, s.chargeReaction)
+            .putBoolean(OFFLINE_PROGRESS, s.offlineProgress).putFloat(OFFLINE_CAP, s.offlineCap)
             .apply()
     }
 
@@ -85,7 +103,12 @@ object OrreryPrefs {
             labels = r.nextBoolean(),
             civSpeed = 0.5f + r.nextFloat() * 2f,
             systemScale = 0.9f + r.nextFloat() * 0.4f,
-            planetSize = 1.1f + r.nextFloat() * 0.9f
+            planetSize = 1.1f + r.nextFloat() * 0.9f,
+            sensorTilt = true,
+            tiltStrength = 0.6f + r.nextFloat() * 0.8f,
+            chargeReaction = true,
+            offlineProgress = true,
+            offlineCap = 8f
         )
     }
 }
