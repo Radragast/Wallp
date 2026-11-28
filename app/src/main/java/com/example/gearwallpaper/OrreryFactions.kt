@@ -58,6 +58,11 @@ class OrreryFactions {
     }
     fun homeOf(i: Int): Int = list[i].home
     fun relation(i: Int, j: Int): Float = rel[i][j]
+    fun aliveOf(i: Int): Boolean = i in list.indices && list[i].alive
+    fun intentOf(i: Int): Int = if (i in list.indices) list[i].intent else -1
+    fun scienceOf(i: Int): Float = if (i in list.indices) list[i].science else 0f
+    fun expansionOf(i: Int): Float = if (i in list.indices) list[i].expansion else 0f
+    fun nameOf(i: Int): String = if (i in list.indices) list[i].name else ""
     fun ownerOf(body: Int): Int = if (body in owners.indices) owners[body] else -1
     fun leaderName(): String {
         var best = -1
