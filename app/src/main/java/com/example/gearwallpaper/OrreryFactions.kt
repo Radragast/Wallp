@@ -111,7 +111,6 @@ class OrreryFactions {
         }
     }
 
-    private function@ Suppress unused
     private fun anyConflict(): Boolean {
         for (f in list) if (f.conflict > 0f) return true
         return false
