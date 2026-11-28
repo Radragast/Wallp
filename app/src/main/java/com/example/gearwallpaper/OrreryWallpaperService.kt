@@ -88,6 +88,7 @@ class OrreryWallpaperService : WallpaperService() {
         private var saveTimer = 0f
         private var stateLoaded = false
         private val factions = OrreryFactions()
+        private val frontier = OrreryFrontier()
 
         private val sim = OrrerySim()
         private val rng = Random(7L)
@@ -220,6 +221,7 @@ class OrreryWallpaperService : WallpaperService() {
             if (stateLoaded) {
                 OrreryState.store(this@OrreryWallpaperService, sim)
                 factions.store(this@OrreryWallpaperService)
+                frontier.store(this@OrreryWallpaperService)
             }
             if (sensorRegistered) {
                 sensorManager.unregisterListener(sensorListener)
@@ -281,6 +283,7 @@ class OrreryWallpaperService : WallpaperService() {
                 stateLoaded = true
                 OrreryState.restore(this@OrreryWallpaperService, sim, settings)
                 factions.restore(this@OrreryWallpaperService, sim)
+                frontier.restore(this@OrreryWallpaperService, sim, factions)
             }
             val r = Random(42L)
             stars = List((150 * settings.stars).toInt().coerceAtLeast(30)) {
@@ -339,7 +342,8 @@ class OrreryWallpaperService : WallpaperService() {
                 sim.eventsOn = settings.events
                 sim.catOn = settings.catastrophes
                 sim.update(dt, settings.speed)
-            factions.update(dt, sim, settings)
+                factions.update(dt, sim, settings)
+                frontier.update(dt, sim, factions, settings)
                 saveTimer += dt
                 if (saveTimer >= 30f) {
                     saveTimer = 0f
@@ -382,6 +386,7 @@ class OrreryWallpaperService : WallpaperService() {
                 for (i in order) if (sim.bodies[i].y >= 0f) drawBody(canvas, i)
                 for (e in sim.events) drawEvent(canvas, e, t)
                 drawFactions(canvas)
+                drawFrontier(canvas, t)
                 if (settings.facts) drawCard(canvas)
                 drawHud(canvas)
                 canvas.drawRect(0f, 0f, sw, sh, vig)
@@ -683,6 +688,95 @@ class OrreryWallpaperService : WallpaperService() {
                 tag.textAlign = Paint.Align.RIGHT
                 canvas.drawText(ps, x + cw - pad, y + ch - pad + dp(2f), tag)
                 tag.textAlign = Paint.Align.LEFT
+            }
+        }
+        private fun edgeMark(canvas: Canvas, x: Float, y: Float, col: Int, label: String) {
+            val m = dp(26f)
+            if (x > m && x < sw - m && y > m && y < sh - m) return
+            val cx = x.coerceIn(m, sw - m)
+            val cy = y.coerceIn(m, sh - m)
+            stroke.strokeWidth = dp(1.2f)
+            stroke.color = col
+            val a = Math.toDegrees(atan2((y - cy).toDouble(), (x - cx).toDouble())).toFloat()
+            canvas.save()
+            canvas.translate(cx, cy)
+            canvas.rotate(a)
+            path.rewind()
+            path.moveTo(dp(6f), 0f)
+            path.lineTo(-dp(4f), -dp(4f))
+            path.lineTo(-dp(4f), dp(4f))
+            path.close()
+            canvas.drawPath(path, stroke)
+            canvas.restore()
+            small.color = col
+            small.textAlign = Paint.Align.CENTER
+            canvas.drawText(label, cx, cy + dp(14f), small)
+            small.textAlign = Paint.Align.LEFT
+        }
+
+        private fun drawFrontier(canvas: Canvas, t: Double) {
+            for (k in 0 until frontier.linkN) {
+                val a = sim.bodies[factions.homeOf(frontier.linkA[k])]
+                val b = sim.bodies[factions.homeOf(frontier.linkB[k])]
+                val ax = px(a.x); val ay = py(a.y)
+                val bx = px(b.x); val by = py(b.y)
+                val n = 2 + (frontier.linkVol[k] * 2f).toInt()
+                for (i in 0 until n) {
+                    val u = ((t * 0.018 + i.toDouble() / n) % 1.0).toFloat()
+                    dot.color = Color.argb(140, 226, 190, 110)
+                    canvas.drawCircle(ax + (bx - ax) * u, ay + (by - ay) * u,
+                        max(0.8f, dp(1.1f)), dot)
+                }
+            }
+
+            for (d in frontier.discoveries) {
+                val r = 900f
+                val x = px(kotlin.math.cos(d.angle) * r)
+                val y = py(kotlin.math.sin(d.angle) * r)
+                if (x < -40f || x > sw + 40f || y < -40f || y > sh + 40f) continue
+                dot.color = if (d.settled) Color.argb(220, 150, 240, 200)
+                else Color.argb(190, 228, 199, 124)
+                canvas.drawCircle(x, y, dp(2f), dot)
+                small.color = Color.argb(140, 190, 205, 225)
+                canvas.drawText(d.star, x + dp(6f), y - dp(4f), small)
+            }
+
+            frontier.probe?.let { p ->
+                val x = px(p.x); val y = py(p.y)
+                stroke.strokeWidth = dp(0.8f)
+                stroke.color = Color.argb(90, 150, 210, 245)
+                stroke.pathEffect = DashPathEffect(floatArrayOf(dp(3f), dp(7f)), -t.toFloat() * dp(14f))
+                canvas.drawLine(px(p.sx), py(p.sy), x, y, stroke)
+                stroke.pathEffect = null
+                dot.color = Color.argb(230, 190, 235, 255)
+                canvas.drawCircle(x, y, dp(2.2f), dot)
+                edgeMark(canvas, x, y, Color.argb(170, 150, 210, 245), "ЗОНД")
+            }
+
+            frontier.ark?.let { a ->
+                if (a.phase == 0) {
+                    val x = px(a.x); val y = py(a.y)
+                    stroke.strokeWidth = dp(1.1f)
+                    stroke.color = Color.argb(110, 228, 199, 124)
+                    stroke.pathEffect = DashPathEffect(floatArrayOf(dp(5f), dp(9f)), -t.toFloat() * dp(18f))
+                    canvas.drawLine(px(a.sx), py(a.sy), x, y, stroke)
+                    stroke.pathEffect = null
+                    glow.shader = RadialGradient(x, y, max(1f, dp(12f)),
+                        intArrayOf(Color.argb(170, 255, 225, 160), Color.argb(0, 255, 180, 80)),
+                        floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
+                    canvas.drawCircle(x, y, dp(12f), glow)
+                    glow.shader = null
+                    dot.color = Color.argb(255, 255, 240, 210)
+                    canvas.drawCircle(x, y, dp(3f), dot)
+                    edgeMark(canvas, x, y, Color.argb(190, 228, 199, 124), "КОВЧЕГ")
+                }
+            }
+
+            if (frontier.arksSent > 0 || frontier.discoveries.isNotEmpty()) {
+                small.color = Color.argb(140, 150, 190, 225)
+                canvas.drawText("ЦЕЛЕЙ " + frontier.discoveries.size +
+                    "  ·  КОВЧЕГОВ " + frontier.arksSent +
+                    "  ·  ОСЕДАНО " + frontier.settled, dp(16f), dp(80f), small)
             }
         }
          private fun drawFactions(canvas: Canvas) {
