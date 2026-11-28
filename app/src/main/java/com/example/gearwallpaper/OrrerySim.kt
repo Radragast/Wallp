@@ -84,6 +84,7 @@ class OrrerySim {
     private var pendBody = -1
     private var pendText = ""
     private var pendTag = ""
+    private val recentFacts = ArrayDeque<String>()
 
     private val rng = Random(20261124L)
     private val caps = doubleArrayOf(0.0, 1e3, 1e5, 1e7, 1e10, 1e11, 1e12, 1e13)
@@ -125,22 +126,6 @@ class OrrerySim {
         else -> String.format(Locale.US, "%.0f", p)
     }
 
-    private fun bodyFact(i: Int): String = when (bodies[i].name) {
-        "Меркурий" -> "Год длится 88 суток, а солнечные сутки — 176 земных"
-        "Венера" -> "Сутки длиннее года: 243 против 225 земных суток"
-        "Земля" -> "Свет Солнца идёт до нас 8 минут 20 секунд"
-        "Луна" -> "Удаляется от Земли примерно на 3.8 см каждый год"
-        "Марс" -> "Гора Олимп выше Эвереста примерно в 2.5 раза"
-        "Юпитер" -> "Тяжелее всех остальных планет вместе взятых"
-        "Ио" -> "Самое вулканическое тело Солнечной системы"
-        "Европа" -> "Подлёдный океан содержит больше воды, чем все океаны Земли"
-        "Ганимед" -> "Крупнее Меркурия и имеет собственное магнитное поле"
-        "Каллисто" -> "Древнейшая поверхность: кратеры не стирались 4 млрд лет"
-        "Сатурн" -> "Средняя плотность меньше плотности воды"
-        "Титан" -> "Единственная луна с плотной атмосферой и метановыми реками"
-        else -> "Гейзеры выбрасывают водяной лёд на сотни километров"
-    }
-
     private fun announce(i: Int, text: String, tag: String) {
         pendBody = i
         pendText = text
@@ -161,12 +146,20 @@ class OrrerySim {
         cardBody = i
         cardTitle = b.name.uppercase()
         cardAge = 0f
-        if (b.pop > 1e3 && rng.nextFloat() < 0.55f) {
-            cardText = "Население " + popText(b.pop) + " · " + stageName(b.stage)
-            cardTag = "СИМУЛЯЦИЯ"
-        } else {
-            cardText = bodyFact(i)
-            cardTag = "НАУКА"
+        val roll = rng.nextFloat()
+        when {
+            roll < 0.22f -> {
+                cardText = OrreryFacts.general(rng, recentFacts)
+                cardTag = "НАУКА · СИСТЕМА"
+            }
+            b.pop > 1e3 && roll < 0.55f -> {
+                cardText = "Население " + popText(b.pop) + " · " + stageName(b.stage)
+                cardTag = "СИМУЛЯЦИЯ"
+            }
+            else -> {
+                cardText = OrreryFacts.pick(b.name, rng, recentFacts)
+                cardTag = "НАУКА"
+            }
         }
     }
 
