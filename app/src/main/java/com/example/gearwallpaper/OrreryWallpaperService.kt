@@ -85,6 +85,8 @@ class OrreryWallpaperService : WallpaperService() {
         private var charging = false
         private var batteryLevel = 1f
         private var batteryTimer = 0f
+        private var saveTimer = 0f
+        private var stateLoaded = false
 
         private val sim = OrrerySim()
         private val rng = Random(7L)
