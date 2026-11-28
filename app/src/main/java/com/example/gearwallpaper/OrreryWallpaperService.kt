@@ -215,7 +215,8 @@ class OrreryWallpaperService : WallpaperService() {
                 }
             }
         }
-        private fun stop() {
+       private fun stop() {
+            if (stateLoaded) OrreryState.store(this@OrreryWallpaperService, sim)
             if (sensorRegistered) {
                 sensorManager.unregisterListener(sensorListener)
                 sensorRegistered = false
@@ -271,6 +272,10 @@ class OrreryWallpaperService : WallpaperService() {
                 }
                 shadeBmp = OrreryTextures.shade(256)
                 glowBmp = OrreryTextures.glow(128)
+            }
+            if (!stateLoaded) {
+                stateLoaded = true
+                OrreryState.restore(this@OrreryWallpaperService, sim, settings)
             }
             val r = Random(42L)
             stars = List((150 * settings.stars).toInt().coerceAtLeast(30)) {
@@ -329,6 +334,11 @@ class OrreryWallpaperService : WallpaperService() {
                 sim.eventsOn = settings.events
                 sim.catOn = settings.catastrophes
                 sim.update(dt, settings.speed)
+                saveTimer += dt
+                if (saveTimer >= 30f) {
+                    saveTimer = 0f
+                    OrreryState.store(this@OrreryWallpaperService, sim)
+                }
 
                 if (settings.camera) {
                     shotT += dt
