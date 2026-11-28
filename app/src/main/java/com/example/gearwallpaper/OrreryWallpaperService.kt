@@ -87,6 +87,7 @@ class OrreryWallpaperService : WallpaperService() {
         private var batteryTimer = 0f
         private var saveTimer = 0f
         private var stateLoaded = false
+        private val factions = OrreryFactions()
 
         private val sim = OrrerySim()
         private val rng = Random(7L)
@@ -216,7 +217,10 @@ class OrreryWallpaperService : WallpaperService() {
             }
         }
        private fun stop() {
-            if (stateLoaded) OrreryState.store(this@OrreryWallpaperService, sim)
+            if (stateLoaded) {
+                OrreryState.store(this@OrreryWallpaperService, sim)
+                factions.store(this@OrreryWallpaperService)
+            }
             if (sensorRegistered) {
                 sensorManager.unregisterListener(sensorListener)
                 sensorRegistered = false
@@ -276,6 +280,7 @@ class OrreryWallpaperService : WallpaperService() {
             if (!stateLoaded) {
                 stateLoaded = true
                 OrreryState.restore(this@OrreryWallpaperService, sim, settings)
+                factions.restore(this@OrreryWallpaperService, sim)
             }
             val r = Random(42L)
             stars = List((150 * settings.stars).toInt().coerceAtLeast(30)) {
@@ -334,10 +339,12 @@ class OrreryWallpaperService : WallpaperService() {
                 sim.eventsOn = settings.events
                 sim.catOn = settings.catastrophes
                 sim.update(dt, settings.speed)
+            factions.update(dt, sim, settings)
                 saveTimer += dt
                 if (saveTimer >= 30f) {
                     saveTimer = 0f
                     OrreryState.store(this@OrreryWallpaperService, sim)
+                    factions.store(this@OrreryWallpaperService)
                 }
 
                 if (settings.camera) {
@@ -374,6 +381,7 @@ class OrreryWallpaperService : WallpaperService() {
                 drawSun(canvas, t)
                 for (i in order) if (sim.bodies[i].y >= 0f) drawBody(canvas, i)
                 for (e in sim.events) drawEvent(canvas, e, t)
+                drawFactions(canvas)
                 if (settings.facts) drawCard(canvas)
                 drawHud(canvas)
                 canvas.drawRect(0f, 0f, sw, sh, vig)
@@ -677,7 +685,44 @@ class OrreryWallpaperService : WallpaperService() {
                 tag.textAlign = Paint.Align.LEFT
             }
         }
-
+         private fun drawFactions(canvas: Canvas) {
+            if (factions.count() == 0) return
+            for (i in sim.bodies.indices) {
+                val o = factions.ownerOf(i)
+                if (o < 0) continue
+                val b = sim.bodies[i]
+                if (b.destroyed) continue
+                val r = rad(b)
+                if (r < 3f) continue
+                val cx = px(b.x); val cy = py(b.y)
+                if (cx < -60f || cx > sw + 60f || cy < -60f || cy > sh + 60f) continue
+                stroke.strokeWidth = max(0.7f, dp(0.9f))
+                stroke.color = factions.colorOf(o)
+                val rr = r * 1.3f
+                canvas.drawArc(RectF(cx - rr, cy - rr, cx + rr, cy + rr), 30f, 300f, false, stroke)
+            }
+            var links = 0
+            for (i in 0 until factions.count()) {
+                for (j in i + 1 until factions.count()) {
+                    if (links >= 4) break
+                    val v = factions.relation(i, j)
+                    if (v > 0.35f || v < -0.35f) {
+                        val a = sim.bodies[factions.homeOf(i)]
+                        val b = sim.bodies[factions.homeOf(j)]
+                        stroke.strokeWidth = dp(0.8f)
+                        stroke.color = if (v > 0f) Color.argb(80, 201, 162, 39)
+                        else Color.argb(85, 200, 70, 55)
+                        canvas.drawLine(px(a.x), py(a.y), px(b.x), py(b.y), stroke)
+                        links++
+                    }
+                }
+            }
+            if (factions.count() > 1) {
+                small.color = Color.argb(140, 150, 190, 225)
+                canvas.drawText("ФРАКЦИЙ " + factions.count() + "  ·  " + factions.leaderName(),
+                    dp(16f), dp(64f), small)
+            }
+        }
         private fun drawHud(canvas: Canvas) {
             cal.timeInMillis = System.currentTimeMillis()
             small.color = Color.argb(150, 150, 190, 225)
