@@ -3,6 +3,7 @@ package com.example.gearwallpaper
 import android.content.Context
 import java.util.Random
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.sqrt
 
