@@ -1,6 +1,9 @@
 package com.example.gearwallpaper
 
+import android.content.SharedPreferences
 import android.graphics.Color
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.Locale
 import java.util.Random
 import kotlin.math.cos
@@ -69,6 +72,7 @@ class OrrerySim {
     var pendingRandom = false
     var pendingCat = false
     var pendingRestore = false
+    var pendingReset = false
     var civSpeed = 1f
     var eventRate = 1f
     var eventsOn = true
@@ -86,10 +90,17 @@ class OrrerySim {
     private var pendTag = ""
     private val recentFacts = ArrayDeque<String>()
 
+    var lastSavedAt = 0L
+    private var catchingUp = false
+
     private val rng = Random(20261124L)
     private val caps = doubleArrayOf(0.0, 1e3, 1e5, 1e7, 1e10, 1e11, 1e12, 1e13)
 
     init {
+        seed()
+    }
+
+    private fun seed() {
         add("Меркурий", -1, 130f, 87.969, 252.25, 5f, Color.rgb(168, 164, 158), Color.rgb(70, 68, 64), false, false)
         add("Венера", -1, 200f, 224.701, 181.98, 8f, Color.rgb(236, 208, 152), Color.rgb(110, 84, 44), false, false)
         add("Земля", -1, 275f, 365.256, 100.46, 9f, Color.rgb(86, 156, 226), Color.rgb(18, 52, 96), false, false)
@@ -112,6 +123,98 @@ class OrrerySim {
         bodies.add(SimBody(n, p, o, per, l, r, a, b, ring, icy))
     }
 
+    fun reset() {
+        bodies.clear()
+        seed()
+        simDays = 0.0
+        swarm = 0f
+        events.clear()
+        cardBody = -1
+        pendBody = -1
+        recentFacts.clear()
+        totalPop = 0.0
+        colonies = 0
+        kIndex = 0f
+        nextEvent = 30f
+    }
+
+    fun save(p: SharedPreferences) {
+        val root = JSONObject()
+        root.put("v", 1)
+        root.put("t", System.currentTimeMillis())
+        root.put("days", simDays)
+        root.put("swarm", swarm.toDouble())
+        val arr = JSONArray()
+        for (b in bodies) {
+            val o = JSONObject()
+            o.put("n", b.name)
+            o.put("st", b.stage)
+            o.put("pop", b.pop)
+            o.put("pr", b.prog.toDouble())
+            o.put("sc", b.scars.toDouble())
+            o.put("ru", b.ruined)
+            o.put("de", b.destroyed)
+            o.put("rb", b.rebuild.toDouble())
+            o.put("co", b.colonyOf)
+            o.put("ri", b.ringBuilt)
+            o.put("el", b.elevator)
+            o.put("ag", b.aggression.toDouble())
+            o.put("ct", b.colonyTimer.toDouble())
+            arr.put(o)
+        }
+        root.put("bodies", arr)
+        p.edit().putString(OrreryPrefs.SIM_STATE, root.toString()).apply()
+        lastSavedAt = System.currentTimeMillis()
+    }
+
+    fun load(p: SharedPreferences): Boolean {
+        val s = p.getString(OrreryPrefs.SIM_STATE, null) ?: return false
+        return try {
+            val root = JSONObject(s)
+            if (root.optInt("v", 0) != 1) return false
+            val arr = root.optJSONArray("bodies") ?: return false
+            if (arr.length() != bodies.size) return false
+            simDays = root.optDouble("days", 0.0)
+            swarm = root.optDouble("swarm", 0.0).toFloat()
+            for (i in bodies.indices) {
+                val o = arr.getJSONObject(i)
+                val b = bodies[i]
+                if (o.optString("n") != b.name) return false
+                b.stage = o.optInt("st", 0)
+                b.pop = o.optDouble("pop", 0.0)
+                b.prog = o.optDouble("pr", 0.0).toFloat()
+                b.scars = o.optDouble("sc", 0.0).toFloat()
+                b.ruined = o.optBoolean("ru", false)
+                b.destroyed = o.optBoolean("de", false)
+                b.rebuild = o.optDouble("rb", 0.0).toFloat()
+                b.colonyOf = o.optInt("co", -1)
+                b.ringBuilt = o.optBoolean("ri", false)
+                b.elevator = o.optBoolean("el", false)
+                b.aggression = o.optDouble("ag", 0.5).toFloat()
+                b.colonyTimer = o.optDouble("ct", 40.0).toFloat()
+            }
+            lastSavedAt = root.optLong("t", System.currentTimeMillis())
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    fun catchUp(seconds: Float, astroSpeed: Float) {
+        if (seconds <= 0f) return
+        catchingUp = true
+        val oldEvents = eventsOn
+        eventsOn = false
+        var remaining = seconds.coerceAtMost(24f * 3600f)
+        while (remaining > 0f) {
+            val dt = min(5f, remaining)
+            update(dt, astroSpeed)
+            remaining -= dt
+        }
+        eventsOn = oldEvents
+        catchingUp = false
+    }
+
     fun stageName(s: Int) = when (s) {
         0 -> "стерильный мир"; 1 -> "микробная жизнь"; 2 -> "сложная жизнь"
         3 -> "разумная жизнь"; 4 -> "индустриальная эпоха"; 5 -> "выход в космос"
@@ -127,6 +230,7 @@ class OrrerySim {
     }
 
     private fun announce(i: Int, text: String, tag: String) {
+        if (catchingUp) return
         pendBody = i
         pendText = text
         pendTag = tag
@@ -164,6 +268,7 @@ class OrrerySim {
     }
 
     fun update(dt: Float, astroSpeed: Float) {
+        if (pendingReset) { pendingReset = false; reset() }
         simDays += (dt * astroSpeed).toDouble()
         val ms = max(0.02f, moonSpeed).toDouble()
         for (b in bodies) {
@@ -229,19 +334,21 @@ class OrrerySim {
         if (pendingCat) { pendingCat = false; spawn(true) }
         if (pendingRestore) { pendingRestore = false; restoreAll() }
 
-        if (cardBody >= 0) {
-            cardAge += dt
-            if (cardAge >= cardDur) { cardBody = -1; cardGap = 80f + rng.nextFloat() * 75f }
-        } else if (pendBody >= 0) {
-            cardBody = pendBody
-            cardTitle = bodies[pendBody].name.uppercase()
-            cardText = pendText
-            cardTag = pendTag
-            cardAge = 0f
-            pendBody = -1
-        } else {
-            cardGap -= dt
-            if (cardGap <= 0f) openCard()
+        if (!catchingUp) {
+            if (cardBody >= 0) {
+                cardAge += dt
+                if (cardAge >= cardDur) { cardBody = -1; cardGap = 80f + rng.nextFloat() * 75f }
+            } else if (pendBody >= 0) {
+                cardBody = pendBody
+                cardTitle = bodies[pendBody].name.uppercase()
+                cardText = pendText
+                cardTag = pendTag
+                cardAge = 0f
+                pendBody = -1
+            } else {
+                cardGap -= dt
+                if (cardGap <= 0f) openCard()
+            }
         }
     }
 
