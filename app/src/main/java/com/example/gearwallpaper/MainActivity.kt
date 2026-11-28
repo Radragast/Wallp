@@ -66,6 +66,12 @@ class MainActivity : Activity() {
         slider(col, "Наклон орбит", OrreryPrefs.TILT, 0f, 1f)
 
         col.addView(space(dp(20)))
+        col.addView(header("ИНТЕРАКТИВ"))
+        switch(col, "Параллакс от наклона телефона", OrreryPrefs.SENSOR_TILT, true)
+        slider(col, "Сила наклона", OrreryPrefs.TILT_STRENGTH, 0f, 2f)
+        switch(col, "Реакция на зарядку и батарею", OrreryPrefs.CHARGE_REACTION, true)
+
+        col.addView(space(dp(20)))
         col.addView(header("ИНФОРМАЦИЯ"))
         switch(col, "Карточки в золотой рамке у планет", OrreryPrefs.FACTS, true)
         switch(col, "Дата и время сверху", OrreryPrefs.DATE, true)
@@ -144,6 +150,7 @@ class MainActivity : Activity() {
             OrreryPrefs.SYSTEM_SCALE -> def.systemScale
             OrreryPrefs.PLANET_SIZE -> def.planetSize
             OrreryPrefs.CIV_SPEED -> def.civSpeed
+            OrreryPrefs.TILT_STRENGTH -> def.tiltStrength
             else -> 1f
         }
         val cur = prefs.getFloat(key, fallback)
